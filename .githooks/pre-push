@@ -1,11 +1,10 @@
 #!/bin/bash
-# Перед push: поднять VERSION, закоммитить и запушить уже с новой версией.
+# Перед push: поднять VERSION и попросить один повторный push
+# (без вложенного push — иначе git печатает ложный error).
 set -euo pipefail
 
-# Аргументы от git: $1 = remote name, $2 = remote URL (URL в push НЕ передавать)
 remote="${1:-origin}"
 
-# Считать stdin от git (иначе хук может зависнуть).
 while read -r _local_ref _local_sha _remote_ref _remote_sha; do
   :
 done || true
@@ -17,21 +16,10 @@ fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-push_head() {
-  echo "Пушу на ${remote}…"
-  if SKIP_VERSION_BUMP=1 git push "$remote" HEAD; then
-    echo "✓ На GitHub. Строку 'pre-push hook declined' ниже можно игнорировать."
-    exit 1
-  fi
-  echo "✗ git push не удался" >&2
-  exit 1
-}
-
-# Если верхний коммит уже bump версии (прошлый push оборвался) — только дожать push.
 subj="$(git log -1 --pretty=%s 2>/dev/null || true)"
+# Уже забампили — пускаем обычный push без ошибок.
 if [[ "$subj" == "chore: bump version to "* ]]; then
-  echo "VERSION уже в коммите (${subj#chore: bump version to }) — дожимаю push."
-  push_head
+  exit 0
 fi
 
 chmod +x scripts/bump_version.sh 2>/dev/null || true
@@ -50,4 +38,6 @@ fi
 git commit -m "chore: bump version to ${NEW}"
 echo ""
 echo "VERSION → ${NEW}"
-push_head
+echo "Сделай ещё раз:  git push ${remote}"
+echo "(второй push уже без бампа, уйдёт чисто)"
+exit 1
