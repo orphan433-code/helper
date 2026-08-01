@@ -1,0 +1,7 @@
+playwright>=1.40
+pyyaml>=6.0
+Pillow>=10.0
+ocrmac>=0.1.9
+pywebview>=5.0
+fastapi>=0.110
+uvicorn[standard]>=0.27

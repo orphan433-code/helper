@@ -1,0 +1,10 @@
+TJSBOT — установка
+
+cd ~/Desktop
+git clone https://github.com/orphan433-code/helper.git TJSBOT
+cd TJSBOT && bash setup.sh && bash start.sh
+
+Обновления: в UI кнопка ↓, потом ↻.
+.venv создаётся setup.sh / ensure_venv.sh / кнопкой Обновить.
+
+Не коммить: .venv, config.yaml, .env, platcore-decline/config.yaml

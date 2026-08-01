@@ -1,0 +1,48 @@
+# Отмена / редирект new-сделок (PlatCore API)
+# Скопируй в config.yaml и поправь пути / traders.
+# python decline_by_bank_api.py [--list | --execute]
+# python decline_by_bank_api.py --redirect --execute
+
+dashboard:
+  monitor_url: https://hz.temkitemki.work/pay-out?status=new
+
+browser:
+  # Профиль Chromium с сессией PlatCore (относительно этой папки).
+  # Соседний CNY: ../../CNY/browser_profile
+  # Или общий с TJSBOT: ../browser_profile
+  user_data_dir: ../../CNY/browser_profile
+  headless: true
+
+bank_decline:
+  api_base_url: ""
+  default_bank: tbc
+  patterns:
+    - tbc
+  presets:
+    tbc:
+      patterns: [tbc]
+    bog:
+      label: Bank of Georgia
+      patterns: ["bank of georgia", georgia, bog]
+      card_prefixes: ["548888"]
+  find_new_type: buyAll
+  find_new_limit: 50
+  # token: ""
+  # local_storage_keys: [token, accessToken]
+
+# Редирект: количество + сумма; Bank of Georgia (548888…) не трогаем.
+bank_redirect:
+  max_per_run: 5
+  min_amount: null
+  max_amount: null
+  skip_card_prefixes:
+    - "548888"
+  skip_bank_patterns:
+    - "bank of georgia"
+    - georgia
+    - bog
+  traders:
+    - label: "trader-1"
+      id: "00000000-0000-0000-0000-000000000001"
+    - label: "trader-2"
+      id: "00000000-0000-0000-0000-000000000002"

@@ -1,0 +1,202 @@
+# Скопируйте в config.yaml
+# Профиль браузера общий с CNY (login_browser.py) — сессия PlatCore уже там.
+# Секреты (PIN и т.п.) только в config.yaml — его в git не кладём.
+
+# =============================================================================
+# PLATCORE — парсинг списка, Accept, данные сделки
+# Запуск: python pipeline.py  |  логин: python login_browser.py
+# =============================================================================
+
+dashboard:
+  monitor_url: "https://hz.temkitemki.work/pay-out?limit=100&status=new&filter=opened"
+  poll_interval_sec: 2.0
+  process_existing_on_start: false
+
+pipeline:
+  max_deals_per_run: 1
+  # Полных проходов списка без новой сделки → стоп (не ждать max_deals вечно).
+  max_empty_list_passes: 2
+  min_deals_before_start: 0
+  confirm_next_deal: false
+  spawn_deal_delay_sec: 2.0
+  run_bank_after_accept: false
+  run_completion_after_batch: true
+  exit_after_run: true
+
+stage1:
+  fake_accept: true
+
+validation:
+  account_min_digits: 10
+  account_max_digits: 20
+  # Фильтр входа по USDT (не фиат THB/GEL)
+  min_amount: 364.875
+  max_amount: 1000.875
+  # 4… = Visa, 5… = Mastercard (перед Accept)
+  allow_visa: true
+  allow_mastercard: false
+
+browser:
+  user_data_dir: "../CNY/browser_profile"
+  headless: false
+  # Масштаб вкладок Chromium (0.7 = 70% — больше строк списка в окне)
+  page_zoom: 0.7
+
+human:
+  fast_mode: true
+  delay_min_sec: 0.12
+  delay_max_sec: 0.28
+  confirm_accept_timeout_ms: 4000
+
+# =============================================================================
+# BANK — Android adb, Activ Bank, OCR по экрану телефона
+# Запуск: python bank_flow.py
+# Устройство: USB debugging, adb devices
+# =============================================================================
+
+bank:
+  device_mode: android
+  adb_serial: null
+
+  # --- PIN ---
+  pin: "1234"
+
+  # --- Экран PIN (что ищем на телефоне) ---
+  pin_screen_markers:
+    - "Activ Bank"
+  keypad_check_digits:
+    - "1"
+    - "5"
+
+  # --- Этап 1: ожидание перед стартом ---
+  focus_delay_sec: 3
+  stage_timeout_sec: 30
+  mirror_focus_sec: 0.45
+  pin_pre_tap_sec: 0.6
+  pin_first_tap_twice: true
+  pin_first_retry_gap_sec: 0.4
+  pin_prime_tap: true
+  pin_prime_settle_sec: 0.25
+  pin_prime_y_offset: -130
+
+  # --- Тайминги тапов по PIN-клавиатуре ---
+  pin_tap_gap_sec: 0.3
+  pin_tap_same_gap_sec: 0.45
+  pin_tap_warp_sec: 0.05
+  pin_first_tap_warp_sec: 0.15
+  pin_first_tap_hold_sec: 0.08
+  pin_tap_hold_sec: 0.05
+  pin_tap_settle_sec: 0.08
+  pin_first_tap_settle_sec: 0.18
+  post_pin_settle_sec: 0.8
+
+  # --- Этап 2: Платежи → Переводы → scroll → Друг стра ---
+  label_payments: "Платежи"
+  label_transfers: "Переводы"
+  label_other_countries:
+    - "Друг стра"
+    - "Дру стра"
+    - "Друг"
+    - "дру"
+    - "стра"
+  nav_timeout_sec: 30
+  nav_pre_tap_sec: 0.35
+  other_tap_icon_offset_y: 45
+  carousel_scroll_below_y: 75
+  carousel_scroll_x_offset: 100
+  carousel_scroll_pixels: -8
+  carousel_scroll_lines: 5
+  carousel_scroll_method: pixel
+  carousel_scroll_pulses: 4
+  carousel_scroll_pulse_gap: 0.12
+  carousel_swipe_length: 110
+  carousel_post_scroll_sec: 0.5
+  carousel_scroll_max_rounds: 4
+
+  # --- Этап 3: форма перевода (после «Друг стра») ---
+  label_by_card:
+    - "По номеру карты"
+    - "номеру карты"
+  label_card_number:
+    - "Введите номер карты"
+    - "номер карты"
+  label_holder_name:
+    - "Введите Фамилию и Имя"
+    - "Введите фамилию"
+    - "фамилию имя"
+  label_debit_amount:
+    - "Сумма списания"
+    - "Сумма"
+  label_debit_section: "Сумма списания"
+  label_debit_amount_field: "Сумма"
+  label_credit_section: "Сумма зачисления"
+  label_transfer_button: "Перевести"
+  eur_verify_enabled: true
+  eur_verify_timeout_sec: 30
+  eur_verify_tolerance: 0.01
+  eur_verify_poll_sec: 0.5
+  form_post_transfer_sec: 1.0
+  post_transfer_enabled: true
+  review_screen_markers:
+    - "Подтверждение перевода"
+    - "Информация о переводе"
+  label_confirm_transfer_button:
+    - "Подтвердить и перевести"
+    - "Подтвердить"
+  review_timeout_sec: 30
+  review_poll_sec: 0.5
+  review_post_tap_sec: 1.0
+  review_eur_verify: true
+  sms_screen_markers:
+    - "Подтвердите код"
+    - "код из смс"
+  sms_autofill_markers:
+    - "Источник"
+    - "Life"
+  sms_timeout_sec: 45
+  sms_poll_sec: 0.5
+  sms_post_tap_sec: 1.5
+  success_screen_markers:
+    - "Детали перевода"
+  label_home_button:
+    - "На главную страницу"
+    - "На главную"
+  success_timeout_sec: 60
+  success_poll_sec: 0.5
+  home_post_tap_sec: 1.0
+  form_field_offset_y: 0
+  form_input_method: hardware
+  form_card_input_method: hardware
+  form_name_input_method: hardware
+  form_amount_input_method: hardware
+  keyboard_globe_taps: 0
+  form_key_interval: 0.04
+  form_keyboard_switch_sec: 0.45
+  form_paste_settle_sec: 0.25
+  form_input_retries: 1
+  bank_pre_focus_sec: 1.5
+  window_switch_settle_sec: 0
+  skip_eur_refresh_if_present: true
+  bank_handoff_fast: true
+  bank_handoff_focus_sec: 0.35
+  bank_handoff_nav_settle_sec: 0.35
+  bank_handoff_transfers_poll_sec: 0.18
+  bank_handoff_step_gap_sec: 0.15
+  form_pre_tap_sec: 0.35
+  form_after_type_sec: 0.3
+  form_timeout_sec: 30
+  transfer_account: ""
+  transfer_holder: ""
+  transfer_amount_tjs:
+
+  # --- OCR по экрану телефона (полный кадр adb) ---
+  debug_mode: false
+  debug_screen_path: "debug_screen.png"
+  other_edge_tap_enabled: false
+  languages:
+    - ru-RU
+    - en-US
+    - zh-Hans
+  confidence_min: 0.35
+  click_timeout_sec: 30.0
+  click_retry_count: 3
