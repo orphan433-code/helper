@@ -166,7 +166,12 @@ else
   ok "platcore-decline/config.yaml уже есть — не трогаю"
 fi
 
-chmod +x setup.sh start.sh setup.command start.command ensure_venv.sh 2>/dev/null || true
+chmod +x setup.sh start.sh setup.command start.command ensure_venv.sh scripts/*.sh .githooks/* 2>/dev/null || true
+
+if [[ -d .git ]]; then
+  git config core.hooksPath .githooks
+  ok "git hooks: VERSION бампается при push"
+fi
 
 echo ""
 echo "════════════════════════════════════════════"

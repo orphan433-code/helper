@@ -1,0 +1,42 @@
+#!/bin/bash
+# Перед push: поднять VERSION, закоммитить и запушить уже с новой версией.
+set -euo pipefail
+
+# Считать stdin от git (иначе хук может зависнуть).
+while read -r _local_ref _local_sha _remote_ref _remote_sha; do
+  :
+done || true
+
+if [[ "${SKIP_VERSION_BUMP:-}" == "1" ]]; then
+  exit 0
+fi
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+chmod +x scripts/bump_version.sh 2>/dev/null || true
+NEW="$(bash scripts/bump_version.sh)"
+OLD="$(git show HEAD:VERSION 2>/dev/null | tr -d '[:space:]' || true)"
+
+if [[ "$NEW" == "$OLD" ]]; then
+  exit 0
+fi
+
+git add VERSION
+if git diff --cached --quiet -- VERSION; then
+  exit 0
+fi
+
+git commit -m "chore: bump version to ${NEW}"
+echo ""
+echo "VERSION → ${NEW}"
+echo "Пушу коммит с версией…"
+# remote/url из аргументов git push (часто пусто → origin текущего)
+if SKIP_VERSION_BUMP=1 git push "$@"; then
+  echo "✓ Версия ${NEW} на GitHub. Строку 'pre-push hook declined' ниже можно игнорировать."
+else
+  echo "✗ Не удалось запушить коммит с VERSION" >&2
+  exit 1
+fi
+# Отменяем исходный push без version-коммита.
+exit 1
