@@ -17,3 +17,8 @@ TJSBOT — установка на Mac
 Без git: на github.com/orphan433-code/helper → Code → Download ZIP → распаковать → setup.sh
 
 Обновления: в UI кнопка ↓, потом ↻.
+
+Каждый день запуск:
+  cd ~/Desktop/TJSBOT && bash start.sh
+  (или двойной клик start.command)
+  стоп: Ctrl+C
