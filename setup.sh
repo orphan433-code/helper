@@ -70,6 +70,16 @@ fi
 command -v brew >/dev/null 2>&1 || fail "brew не найден после установки"
 ok "brew: $(brew --prefix)"
 
+# ── 2b. Git ──────────────────────────────────────────────
+say "[2b/7] Git…"
+if ! command -v git >/dev/null 2>&1; then
+  echo "  git не найден — ставлю: brew install git"
+  brew install git || fail "brew install git не удался"
+  load_brew_env
+fi
+command -v git >/dev/null 2>&1 || fail "git не найден. Сначала: xcode-select --install"
+ok "git: $(git --version 2>&1)"
+
 # ── 3. Python 3.10+ ──────────────────────────────────────
 say "[3/7] Python…"
 find_python() {

@@ -1,0 +1,19 @@
+TJSBOT — установка на Mac
+
+Сначала brew + git (ещё БЕЗ папки проекта):
+
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+  eval "$(/opt/homebrew/bin/brew shellenv)"
+  brew install git
+  git --version
+
+Потом проект:
+
+  cd ~/Desktop
+  git clone https://github.com/orphan433-code/helper.git TJSBOT
+  cd TJSBOT && bash setup.sh && bash start.sh
+
+Без git: на github.com/orphan433-code/helper → Code → Download ZIP → распаковать → setup.sh
+
+Обновления: в UI кнопка ↓, потом ↻.
