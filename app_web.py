@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
 
 from completion_registry import proofs_dir, videos_dir
 from config_loader import bank_settings, load_config
+from ensure_configs import ensure_local_configs
 from gui_hooks import (
     clear_job_window_hooks,
     enter_background,
@@ -196,6 +197,9 @@ class TzkApi:
         )
 
     def get_state(self) -> dict[str, Any]:
+        created = ensure_local_configs()
+        for rel in created:
+            self._log_queue.put(f"Создан {rel} из примера — поправь под себя.\n")
         cfg = load_config()
         pipe = cfg.get("pipeline") or {}
         val = cfg.get("validation") or {}
@@ -393,8 +397,15 @@ class TzkApi:
     ) -> dict[str, Any]:
         if self._running:
             return self._err("Уже выполняется")
+        ensure_local_configs()
         if not DECLINE_SCRIPT.is_file():
             return self._err(f"Не найден скрипт: {DECLINE_SCRIPT}")
+        decline_cfg = DECLINE_DIR / "config.yaml"
+        if not decline_cfg.is_file():
+            return self._err(
+                "Нет platcore-decline/config.yaml — должен создаться из "
+                "config.example.yaml. Проверь, что example есть в репо."
+            )
         if not PYTHON.is_file():
             return self._err(f"Не найден Python: {PYTHON}")
         mode: JobMode = "redirect" if redirect else "decline"

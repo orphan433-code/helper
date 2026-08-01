@@ -1,0 +1,46 @@
+# Отмена / редирект сделок (PlatCore API)
+# При первом запуске копируется в config.yaml автоматически.
+# python decline_by_bank_api.py [--list | --execute]
+# python decline_by_bank_api.py --redirect --execute
+
+dashboard:
+  monitor_url: https://hz.temkitemki.work/pay-out?status=new
+
+browser:
+  # Папка Chromium с уже залогиненным PlatCore (тот же профиль, что для входа).
+  # Соседний CNY: ../../CNY/browser_profile
+  # Или свой путь абсолютный / относительно этой папки.
+  user_data_dir: ../../CNY/browser_profile
+  headless: true
+
+bank_decline:
+  api_base_url: ""
+  default_bank: tbc
+  patterns:
+    - tbc
+  presets:
+    tbc:
+      patterns: [tbc]
+    bog:
+      label: Bank of Georgia
+      patterns: ["bank of georgia", georgia, bog]
+      card_prefixes: ["548888"]
+  find_new_type: buyAll
+  find_new_limit: 50
+
+# Редирект: кому передавать сделки (label = кнопки в UI, id = UUID в PlatCore).
+bank_redirect:
+  max_per_run: 5
+  min_amount: null
+  max_amount: null
+  skip_card_prefixes:
+    - "548888"
+  skip_bank_patterns:
+    - "bank of georgia"
+    - georgia
+    - bog
+  traders:
+    - label: "104.1"
+      id: "REPLACE_WITH_TRADER_UUID_1"
+    - label: "104.2"
+      id: "REPLACE_WITH_TRADER_UUID_2"

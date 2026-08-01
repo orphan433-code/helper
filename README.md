@@ -29,7 +29,10 @@ bash start.sh
 ## Decline / редирект
 
 `platcore-decline/` внутри репо.
-Скопируй `config.example.yaml` → `config.yaml`, traders + browser profile.
+При первом запуске `config.yaml` создаётся сам из `config.example.yaml`.
+Поправь там:
+- **browser profile** — путь к папке Chromium с логином PlatCore
+- **traders** — label + UUID аккаунтов для редиректа (кнопки 104.1 / 104.2)
 
 ## В git не кладём
 

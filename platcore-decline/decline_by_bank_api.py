@@ -43,10 +43,17 @@ _DEFAULT_TOKEN_KEYS = (
 
 def load_config() -> dict:
     path = ROOT / "config.yaml"
+    example = ROOT / "config.example.yaml"
+    if not path.is_file() and example.is_file():
+        path.write_bytes(example.read_bytes())
+        print(f"[INFO] Создан {path.name} из config.example.yaml — поправь traders / browser profile")
     if not path.is_file():
         raise SystemExit(f"Нет config.yaml: {path}")
-    with path.open(encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    with path.open(encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+    if not isinstance(data, dict):
+        raise SystemExit(f"Битый config.yaml: {path}")
+    return data
 
 
 def _api_base_url(cfg: dict) -> str:
