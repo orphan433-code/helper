@@ -339,6 +339,7 @@ async def accept_deals_loop(
     if allow_mc:
         brands.append("MC(5…)")
     info(f"Карты: {', '.join(brands) if brands else 'нет (всё skip)'}")
+    info("Статусы списка: new")
     if fake_accept:
         warn("Accept в dry-run (fake_accept)")
     debug(
@@ -362,14 +363,18 @@ async def accept_deals_loop(
                 and not skip_seed
                 and not dash_cfg.get("process_existing_on_start", False)
             ):
-                rows_seed = await collect_new_row_previews(list_page)
+                rows_seed = await collect_new_row_previews(
+                    list_page, allowed_statuses=frozenset({"new"})
+                )
                 for _, p in rows_seed:
                     seen.add(p.fingerprint)
                 seen_seeded = True
                 if rows_seed:
                     debug(f"При старте пропущено {len(rows_seed)} висящих new")
 
-        rows = await collect_new_row_previews(list_page)
+        rows = await collect_new_row_previews(
+            list_page, allowed_statuses=frozenset({"new"})
+        )
         picked = False
 
         for row_loc, preview in rows:
@@ -441,7 +446,7 @@ async def accept_deals_loop(
                 if isinstance(panic, PanicError) and is_phase1_pick_recoverable(
                     panic
                 ):
-                    warn(str(panic))
+                    info(str(panic))  # soft-skip — без спама в журнал
                     debug("Возврат к списку…")
                     if list_page and not list_page.is_closed():
                         await return_platcore_list_from_preview(
@@ -477,7 +482,7 @@ async def accept_deals_loop(
                             list_page, monitor_url
                         )
                     except Exception as cleanup_exc:
-                        warn(f"Возврат к списку после пропуска: {cleanup_exc}")
+                        info(f"Возврат к списку после пропуска: {cleanup_exc}")
                         try:
                             list_page = await ensure_platcore_list_tab(
                                 context, monitor_url, reuse_existing=False
@@ -532,7 +537,7 @@ async def accept_deals_loop(
                             order_id=accepted.order_id or "",
                         )
                     except Exception as reg_exc:
-                        warn(f"Учёт выплаты для отмен: {reg_exc}")
+                        info(f"Учёт выплаты для отмен: {reg_exc}")
                     break
                 except JobStopped:
                     raise
@@ -585,7 +590,7 @@ async def accept_deals_loop(
                                 order_id=accepted.order_id or "",
                             )
                         except Exception as reg_exc:
-                            warn(f"Учёт выплаты для отмен: {reg_exc}")
+                            info(f"Учёт выплаты для отмен: {reg_exc}")
                         break
                     warn(
                         f"Сделка #{accepted.index} пропущена — "

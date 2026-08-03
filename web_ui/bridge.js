@@ -30,7 +30,9 @@
       get_state: () => apiGet("/api/get_state"),
       poll_logs: async () => {
         const j = await apiGet("/api/poll_logs");
-        return (j && j.text) || "";
+        if (j && Array.isArray(j.events)) return j.events;
+        if (j && j.text) return j.text;
+        return [];
       },
       check_adb: () => apiGet("/api/check_adb"),
       get_update_status: () => apiGet("/api/get_update_status"),
@@ -41,7 +43,8 @@
         max_amount,
         allow_visa,
         allow_mastercard,
-        max_empty_list_passes
+        max_empty_list_passes,
+        from_pending
       ) =>
         apiPost("/api/save_settings", {
           max_deals,
@@ -50,6 +53,7 @@
           allow_visa,
           allow_mastercard,
           max_empty_list_passes,
+          from_pending: !!from_pending,
         }),
       start_pipeline: (
         max_deals,
@@ -57,7 +61,8 @@
         max_amount,
         allow_visa,
         allow_mastercard,
-        max_empty_list_passes
+        max_empty_list_passes,
+        from_pending
       ) =>
         apiPost("/api/start_pipeline", {
           max_deals,
@@ -66,6 +71,7 @@
           allow_visa,
           allow_mastercard,
           max_empty_list_passes,
+          from_pending: !!from_pending,
         }),
       start_login: () => apiPost("/api/start_login"),
       stop_job: () => apiPost("/api/stop_job"),
@@ -247,8 +253,12 @@
       try { msg = JSON.parse(ev.data); } catch (_) { return; }
       if (msg.type === "eval" && msg.script) {
         try { (0, eval)(msg.script); } catch (err) { console.warn("UI eval error", err, msg.script); }
-      } else if (msg.type === "log" && msg.text && typeof appendLog === "function") {
-        appendLog(msg.text);
+      } else if (msg.type === "log") {
+        if (Array.isArray(msg.events) && typeof ingestLogEvents === "function") {
+          ingestLogEvents(msg.events);
+        } else if (msg.text && typeof appendLog === "function") {
+          appendLog(msg.text);
+        }
       }
     };
     ws.onclose = () => {

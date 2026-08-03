@@ -14,12 +14,15 @@ def apply_gui_settings(
     allow_visa: bool | None = None,
     allow_mastercard: bool | None = None,
     max_empty_list_passes: int | None = None,
+    from_pending: bool | None = None,
 ) -> None:
     cfg = load_config()
     pipe = dict(cfg.get("pipeline") or {})
     pipe["max_deals_per_run"] = max(1, min(50, int(max_deals)))
     if max_empty_list_passes is not None:
         pipe["max_empty_list_passes"] = max(1, min(20, int(max_empty_list_passes)))
+    if from_pending is not None:
+        pipe["from_pending"] = bool(from_pending)
     cfg["pipeline"] = pipe
 
     if (

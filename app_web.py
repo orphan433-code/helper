@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from completion_registry import proofs_dir, videos_dir
+from logkit import make_event, set_ui_sink
 from config_loader import bank_settings, load_config
 from ensure_configs import ensure_local_configs
 from gui_hooks import (
@@ -73,15 +74,25 @@ def _adb_status_text() -> tuple[str, bool]:
 
 
 class LogRedirector:
-    def __init__(self, log_queue: queue.Queue[str]) -> None:
-        self._queue = log_queue
+    """Чужой print() во время job → только в консоль. В UI-журнал не льём."""
+
+    def __init__(self, push_event=None) -> None:
+        self._push_event = push_event
 
     def write(self, text: str) -> None:
-        if text:
-            self._queue.put(text)
+        if not text:
+            return
+        try:
+            sys.__stdout__.write(text)
+            sys.__stdout__.flush()
+        except Exception:
+            pass
 
     def flush(self) -> None:
-        pass
+        try:
+            sys.__stdout__.flush()
+        except Exception:
+            pass
 
 
 class TzkApi:
@@ -89,7 +100,8 @@ class TzkApi:
 
     def __init__(self) -> None:
         self._window: Any = None
-        self._log_queue: queue.Queue[str] = queue.Queue()
+        self._log_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        set_ui_sink(self._push_log_event)
         self._worker: threading.Thread | None = None
         self._worker_loop: asyncio.AbstractEventLoop | None = None
         self._worker_task: asyncio.Task | None = None
@@ -104,6 +116,50 @@ class TzkApi:
 
     def set_window(self, window: Any) -> None:
         self._window = window
+
+    def _push_log_event(self, event: dict[str, Any]) -> None:
+        if not event:
+            return
+        self._log_queue.put(event)
+
+    def _push_log(
+        self,
+        message: str,
+        *,
+        level: str = "info",
+        service: str = "gui",
+        status: str = "",
+    ) -> None:
+        raw = str(message or "").strip()
+        if not raw:
+            return
+        # Строки decline/redirect скрипта: [INFO]/[OK]/[WARN]/[ERROR]
+        msg = raw
+        lvl = level
+        st = status
+        if raw.startswith("[ERROR]"):
+            lvl = "error"
+            st = st or "error"
+            msg = raw[7:].strip()
+        elif raw.startswith("[WARN]"):
+            lvl = "warning"
+            st = st or "warning"
+            msg = raw[6:].strip()
+        elif raw.startswith("[OK]"):
+            lvl = "info"
+            st = st or "ok"
+            msg = raw[4:].strip()
+        elif raw.startswith("[INFO]"):
+            msg = raw[6:].strip()
+        elif raw.startswith("[ALERT]"):
+            lvl = "error"
+            st = st or "alert"
+            msg = raw[7:].strip()
+        if not msg:
+            return
+        self._push_log_event(
+            make_event(msg, level=lvl, service=service, status=st)
+        )
 
     def _ok(self, **extra: Any) -> dict[str, Any]:
         return {"ok": True, **extra}
@@ -141,7 +197,7 @@ class TzkApi:
         match = str(payload.get("match_label") or "").strip()
         if match:
             line = f"{line} ≈ {match}"
-        self._log_queue.put(f"\n[ALERT] {line}\n")
+        self._push_log(line, level="error", service="watch", status="alert")
 
     def _clear_receipt_progress(self) -> None:
         self._notify_ui("clearReceiptProgress();")
@@ -199,7 +255,7 @@ class TzkApi:
     def get_state(self) -> dict[str, Any]:
         created = ensure_local_configs()
         for rel in created:
-            self._log_queue.put(f"Создан {rel} из примера — поправь под себя.\n")
+            self._push_log(f"Создан {rel} из примера — поправь под себя", service="gui")
         cfg = load_config()
         pipe = cfg.get("pipeline") or {}
         val = cfg.get("validation") or {}
@@ -212,6 +268,7 @@ class TzkApi:
             "max_amount": str(val.get("max_amount", "") or ""),
             "allow_visa": bool(val.get("allow_visa", True)),
             "allow_mastercard": bool(val.get("allow_mastercard", False)),
+            "from_pending": bool(pipe.get("from_pending", False)),
             "screens_dir": str(proofs_dir(cfg)),
             "videos_dir": str(videos_dir(cfg)),
             "video_min_usdt": float(
@@ -230,14 +287,18 @@ class TzkApi:
             "app_version": read_version(),
         }
 
-    def poll_logs(self) -> str:
-        chunks: list[str] = []
+    def poll_logs(self) -> list[dict[str, Any]]:
+        """Структурированные события журнала (для interactive logs table)."""
+        events: list[dict[str, Any]] = []
         while True:
             try:
-                chunks.append(self._log_queue.get_nowait())
+                item = self._log_queue.get_nowait()
             except queue.Empty:
                 break
-        return "".join(chunks)
+            if isinstance(item, dict):
+                events.append(item)
+            # старые строковые записи игнорируем — журнал только структурированный
+        return events
 
     def save_settings(
         self,
@@ -247,6 +308,7 @@ class TzkApi:
         allow_visa: bool = True,
         allow_mastercard: bool = False,
         max_empty_list_passes: int | None = None,
+        from_pending: bool = False,
     ) -> dict[str, Any]:
         try:
             min_amt = self._parse_amount(min_amount)
@@ -263,15 +325,17 @@ class TzkApi:
                 allow_visa=bool(allow_visa),
                 allow_mastercard=bool(allow_mastercard),
                 max_empty_list_passes=empty_passes,
+                from_pending=bool(from_pending),
             )
             brands = []
             if allow_visa:
                 brands.append("Visa")
             if allow_mastercard:
                 brands.append("MC")
+            mode = "pending→Approve→банк→чеки" if from_pending else "new→Accept→банк"
             msg = (
                 f"[OK] Сохранено: {max_deals} сделок, "
-                f"пустых кругов списка ≤ {empty_passes}"
+                f"пустых кругов списка ≤ {empty_passes}, режим: {mode}"
             )
             if min_amt is not None or max_amt is not None:
                 msg += f", сумма {min_amt or '—'}–{max_amt or '—'}"
@@ -285,10 +349,7 @@ class TzkApi:
             return self._err("Уже выполняется")
         self._status = "Открываю окно входа…"
         self._set_running(True, "login")
-        self._log_queue.put(
-            "\n--- Вход в PlatCore ---\n"
-            "[INFO] Открываю видимое окно (не headless)\n"
-        )
+        self._push_log("Вход в PlatCore", service="platcore", status="section")
         self._start_worker(run_login, "login")
         return self._ok()
 
@@ -300,6 +361,7 @@ class TzkApi:
         allow_visa: bool = True,
         allow_mastercard: bool = False,
         max_empty_list_passes: int | None = None,
+        from_pending: bool | None = None,
     ) -> dict[str, Any]:
         if self._running:
             return self._err("Уже выполняется")
@@ -312,6 +374,11 @@ class TzkApi:
                 if max_empty_list_passes is not None
                 else pipe.get("max_empty_list_passes", 2)
             )
+            pending = (
+                bool(from_pending)
+                if from_pending is not None
+                else bool(pipe.get("from_pending", False))
+            )
             apply_gui_settings(
                 max_deals=deals,
                 min_amount=self._parse_amount(min_amount),
@@ -319,14 +386,17 @@ class TzkApi:
                 allow_visa=bool(allow_visa),
                 allow_mastercard=bool(allow_mastercard),
                 max_empty_list_passes=empty_passes,
+                from_pending=pending,
             )
         except (ValueError, TypeError) as exc:
             return self._err(f"Некорректное значение: {exc}")
+        mode = "pending→Approve→банк→чеки" if pending else "Accept→банк→чеки"
         self._status = "Обрабатываю сделки…"
         self._set_running(True, "pipeline")
-        self._log_queue.put(
-            f"\n--- Запуск цикла (до {deals} сделок, "
-            f"стоп после {empty_passes} пустых кругов) ---\n"
+        self._push_log(
+            f"Запуск цикла ({mode}, до {deals} сделок, стоп после {empty_passes} пустых кругов)",
+            service="pipeline",
+            status="section",
         )
         self._start_worker(run_pipeline, "pipeline")
         return self._ok()
@@ -421,17 +491,19 @@ class TzkApi:
                 filter_bits.append("только Visa")
             filter_note = ", ".join(filter_bits) if filter_bits else "все подряд"
             self._status = f"Редирект {status_word}-сделок…"
-            self._log_queue.put(
-                "\n--- Редирект (--redirect --execute "
-                f"--deal-status {status_word}) "
-                f"traders={len(trader_ids or [])} "
-                f"({filter_note}) ---\n"
+            self._push_log(
+                f"Редирект {status_word}: traders={len(trader_ids or [])}, "
+                f"{filter_note}",
+                service="redirect",
+                status="section",
             )
         else:
             bank_word = "Bank of Georgia" if bank_key == "bog" else "TBC"
             self._status = f"Отменяю сделки ({bank_word})…"
-            self._log_queue.put(
-                f"\n--- Отмена по банку ({bank_key}) (--execute) ---\n"
+            self._push_log(
+                f"Отмена по банку: {bank_word} ({bank_key})",
+                service="decline",
+                status="section",
             )
         self._set_running(True, mode)
         self._worker = threading.Thread(
@@ -476,7 +548,7 @@ class TzkApi:
             f"setStatus({json.dumps(self._status)});"
             "hideRecoveryPrompt();"
         )
-        self._log_queue.put("\n[INFO] Полная остановка: браузер и контекст…\n")
+        self._push_log("Полная остановка: браузер и контекст…", service="gui")
         if self._subprocess is not None and self._subprocess.poll() is None:
             self._subprocess.terminate()
         loop = self._worker_loop
@@ -588,7 +660,7 @@ class TzkApi:
             except Exception as exc:
                 report += f"Медиа на телефоне: ошибка ({exc})\n"
                 media = {"ok": False, "error": str(exc)}
-        self._log_queue.put("\n" + report)
+        self._push_log(report, service="device")
         if adb_ok:
             return self._ok(
                 message=report,
@@ -622,10 +694,10 @@ class TzkApi:
             elif result.get("venv_error"):
                 msg += f"Внимание venv: {result.get('venv_error')}. "
             msg += "Перезапусти сервер (↻), чтобы подхватить код.\n"
-            self._log_queue.put("\n" + msg)
+            self._push_log(msg, service="gui")
             return self._ok(message=msg, **{k: v for k, v in result.items() if k != "ok"})
         err = str(result.get("error") or "Не удалось обновить")
-        self._log_queue.put(f"\nОбновление: {err}\n")
+        self._push_log(f"Обновление: {err}", level="error", service="gui")
         return self._err(err)
 
     def _parse_amount(self, raw: str) -> float | None:
@@ -665,7 +737,7 @@ class TzkApi:
         self._pending_recovery = done
         self._recovery_choice = "exit"
         self._status = message
-        self._log_queue.put(f"\n!!! {message}\n{detail}\n")
+        self._push_log(f"{message}: {detail}".strip(": "), level="error", service="gui", status="error")
         enter_foreground()
         self._focus_window()
         self._notify_ui(
@@ -716,7 +788,7 @@ class TzkApi:
 
         stdout_prev = sys.stdout
         stderr_prev = sys.stderr
-        redirector = LogRedirector(self._log_queue)
+        redirector = LogRedirector(self._push_log_event)
         sys.stdout = redirector
         sys.stderr = redirector
 
@@ -726,11 +798,11 @@ class TzkApi:
         try:
             loop.run_until_complete(task)
             if not task.cancelled():
-                self._log_queue.put("\n[OK] Завершено.\n")
+                self._push_log("Завершено", status="ok", service="gui")
         except asyncio.CancelledError:
-            self._log_queue.put("\n[INFO] Остановлено.\n")
+            self._push_log("Остановлено", service="gui")
         except Exception:
-            self._log_queue.put("\n[ERROR]\n" + traceback.format_exc())
+            self._push_log(traceback.format_exc(), level="error", service="gui", status="error")
         finally:
             # Гарантия при стопе/ошибке: браузер не висит (headless).
             # Успех + exit_after_run=false — сессию не трогаем.
@@ -755,9 +827,7 @@ class TzkApi:
                         force_close_browser(reason="конец задачи")
                     )
             except Exception as close_exc:
-                self._log_queue.put(
-                    f"\n[WARN] Закрытие браузера: {close_exc}\n"
-                )
+                self._push_log(f"Закрытие браузера: {close_exc}", level="warning", service="gui")
             enter_foreground()
             set_gui_mode(False)
             clear_job_window_hooks()
@@ -794,6 +864,43 @@ class TzkApi:
         )
         self._worker.start()
 
+    @staticmethod
+    def _format_decline_summary(payload: dict[str, Any]) -> str:
+        """Один человекочитаемый итог: сколько + какие сделки."""
+        action = str(payload.get("action") or "cancel")
+        deals = payload.get("deals") or []
+        if not isinstance(deals, list):
+            deals = []
+        redirected = int(payload.get("redirected") or 0)
+        cancelled = int(payload.get("cancelled") or 0)
+        failed = int(payload.get("failed") or 0)
+        total = int(payload.get("total") or len(deals))
+        if action == "redirect":
+            head = f"Редирект: {redirected}/{total}"
+        else:
+            head = f"Отмена: {cancelled}/{total}"
+        if failed:
+            head += f", ошибок {failed}"
+        if not deals:
+            return str(payload.get("message") or head)
+        lines = [head]
+        for d in deals:
+            if not isinstance(d, dict):
+                continue
+            mark = "✓" if d.get("ok") else "✗"
+            card = str(d.get("card") or "????")
+            holder = str(d.get("holder") or "—").strip() or "—"
+            amount = str(d.get("amount") or "—")
+            bank = str(d.get("bank") or "").strip()
+            err = str(d.get("error") or "").strip()
+            bit = f"{mark} {card}  {holder}  {amount}"
+            if bank:
+                bit += f"  → {bank}"
+            if err:
+                bit += f"  ({err})"
+            lines.append(bit)
+        return "\n".join(lines)
+
     def _decline_result(self, payload: dict[str, Any]) -> None:
         action = str(payload.get("action") or "cancel")
         default = (
@@ -821,6 +928,7 @@ class TzkApi:
         begin_job()
         saw_ui_result = False
         action = "redirect" if redirect else "cancel"
+        svc = "redirect" if redirect else "decline"
         cmd = [str(PYTHON), str(DECLINE_SCRIPT)]
         if redirect:
             cmd.append("--redirect")
@@ -856,37 +964,56 @@ class TzkApi:
                 bufsize=1,
             )
             assert self._subprocess.stdout is not None
+            # Детали скрипта — только в терминал; в журнал — один итог.
             for line in self._subprocess.stdout:
-                if line.startswith("TZK_DECLINE_RESULT\t"):
-                    raw = line.split("\t", 1)[1].strip()
-                    try:
-                        payload = json.loads(raw)
-                    except json.JSONDecodeError:
-                        self._log_queue.put(line)
-                        continue
-                    saw_ui_result = True
-                    self._decline_result(payload)
+                try:
+                    sys.__stdout__.write(line)
+                    sys.__stdout__.flush()
+                except Exception:
+                    pass
+                if not line.startswith("TZK_DECLINE_RESULT\t"):
                     continue
-                self._log_queue.put(line)
+                raw = line.split("\t", 1)[1].strip()
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                saw_ui_result = True
+                self._decline_result(payload)
+                failed = int(payload.get("failed") or 0)
+                self._push_log(
+                    self._format_decline_summary(payload),
+                    level="warning" if failed else "info",
+                    service=svc,
+                    status="warning" if failed else "ok",
+                )
             code = self._subprocess.wait()
             done_word = "Редирект" if redirect else "Отмена"
             if code == 0:
-                self._log_queue.put(f"\n[OK] {done_word} завершён.\n")
                 if not saw_ui_result:
-                    self._decline_result(
-                        {
-                            "phase": "done",
-                            "action": action,
-                            "cancelled": 0,
-                            "redirected": 0,
-                            "failed": 0,
-                            "total": 0,
-                            "message": f"{done_word} завершён",
-                            "deals": [],
-                        }
+                    empty = {
+                        "phase": "done",
+                        "action": action,
+                        "cancelled": 0,
+                        "redirected": 0,
+                        "failed": 0,
+                        "total": 0,
+                        "message": f"{done_word}: подходящих сделок нет",
+                        "deals": [],
+                    }
+                    self._decline_result(empty)
+                    self._push_log(
+                        empty["message"],
+                        status="ok",
+                        service=svc,
                     )
             else:
-                self._log_queue.put(f"\n[WARN] exit code {code}\n")
+                self._push_log(
+                    f"{done_word}: ошибка (код {code})",
+                    level="error",
+                    service=svc,
+                    status="error",
+                )
                 if not saw_ui_result:
                     self._decline_result(
                         {
@@ -901,7 +1028,7 @@ class TzkApi:
                         }
                     )
         except Exception:
-            self._log_queue.put("\n[ERROR]\n" + traceback.format_exc())
+            self._push_log(traceback.format_exc(), level="error", service="gui", status="error")
             self._decline_result(
                 {
                     "phase": "done",

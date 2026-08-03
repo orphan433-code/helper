@@ -411,6 +411,43 @@ async def _find_order_info_approve_button(page: Page):
     return None
 
 
+async def click_order_info_approve(page: Page, *, timing: HumanTiming) -> None:
+    """
+    Order info → Approve.
+    Для pending: после клика ждём post-accept модалку (реквизиты → банк),
+    dropzone/Money sent — уже на фазе чеков.
+    """
+    await page.wait_for_load_state("domcontentloaded")
+    await page.wait_for_timeout(450)
+
+    if await _has_completion_dropzone(page):
+        debug("Dropzone + Money sent уже на экране (Approve не нужен)")
+        return
+
+    approve = await _find_order_info_approve_button(page)
+    if approve is None:
+        # Возможно уже post-accept модалка без Order info
+        from platcore_card import wait_for_post_accept_deal_card
+
+        try:
+            await wait_for_post_accept_deal_card(page, verbose=False)
+            debug("Post-accept модалка уже открыта")
+            return
+        except PanicError as exc:
+            raise PanicError(
+                "PlatCore: нет Approve в Order info и нет модалки сделки "
+                f"(url={page.url!r})"
+            ) from exc
+
+    try:
+        if await approve.is_visible():
+            debug("Order info → Approve")
+            await human_click(approve, timing=timing)
+            await asyncio.sleep(0.7)
+    except Exception as exc:
+        raise PanicError(f"PlatCore: не удалось нажать Approve: {exc}") from exc
+
+
 async def ensure_completion_deal_ready(page: Page, *, timing: HumanTiming) -> None:
     """
     После reopen по URL часто открывается Order info (Approve/Decline),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+from urllib.parse import parse_qs, urlparse
 
 from playwright.async_api import Locator, Page
 
@@ -373,10 +374,19 @@ async def _parse_row_preview(row: Locator) -> RowPreview:
     )
 
 
-async def collect_new_row_previews(page: Page) -> list[tuple[Locator, RowPreview]]:
+async def collect_new_row_previews(
+    page: Page,
+    *,
+    allowed_statuses: frozenset[str] | None = None,
+) -> list[tuple[Locator, RowPreview]]:
     await wait_for_list(page)
     rows = page.locator(ROW_SELECTOR)
     result: list[tuple[Locator, RowPreview]] = []
+    allowed = (
+        allowed_statuses
+        if allowed_statuses is not None
+        else list_statuses_from_url(page.url)
+    )
 
     for i in range(await rows.count()):
         row = rows.nth(i)
@@ -386,7 +396,7 @@ async def collect_new_row_previews(page: Page) -> list[tuple[Locator, RowPreview
         if await badge.count() == 0:
             continue
         status = (await badge.first.inner_text()).strip().lower()
-        if status != "new":
+        if status not in allowed:
             continue
         try:
             preview = await _parse_row_preview(row)
@@ -395,6 +405,27 @@ async def collect_new_row_previews(page: Page) -> list[tuple[Locator, RowPreview
         result.append((row, preview))
 
     return result
+
+
+def list_statuses_from_url(url: str) -> frozenset[str]:
+    """
+    Какие статусы строк брать из списка.
+    Берём ?status= из monitor_url (new / pending / all).
+    По умолчанию — только new.
+    """
+    raw = ""
+    try:
+        q = parse_qs(urlparse(url or "").query)
+        values = q.get("status") or []
+        raw = (values[0] if values else "").strip().lower()
+    except Exception:
+        raw = ""
+    if not raw:
+        return frozenset({"new"})
+    if raw in ("all", "*", "any"):
+        return frozenset({"new", "pending"})
+    parts = {p.strip() for p in raw.split(",") if p.strip()}
+    return frozenset(parts) if parts else frozenset({"new"})
 
 
 async def collect_eligible_new_previews_scrolled(
@@ -452,6 +483,8 @@ async def resolve_row_by_preview(
     page: Page,
     preview: RowPreview,
     val_cfg: dict,
+    *,
+    allowed_statuses: frozenset[str] | None = None,
 ) -> Locator | None:
     min_digits = val_cfg["account_min_digits"]
     max_digits = val_cfg["account_max_digits"]
@@ -464,7 +497,9 @@ async def resolve_row_by_preview(
     except PanicError:
         return None
 
-    for row_loc, current in await collect_new_row_previews(page):
+    for row_loc, current in await collect_new_row_previews(
+        page, allowed_statuses=allowed_statuses
+    ):
         if current.time_text != preview.time_text:
             continue
         try:
@@ -565,17 +600,69 @@ async def dismiss_order_preview_modal(page: Page) -> None:
     await page.wait_for_timeout(400)
 
 
+async def dismiss_any_platcore_modal(page: Page, *, presses: int = 3) -> None:
+    """Закрыть любую видимую Chakra-модалку (Order info / сделка / Dispute)."""
+    dialog = page.locator(
+        '[role="dialog"].chakra-modal__content, '
+        '[role="dialog"].chakra-slide, '
+        '[role="dialog"]'
+    )
+    for _ in range(presses):
+        visible = False
+        try:
+            n = min(await dialog.count(), 6)
+            for i in range(n):
+                if await dialog.nth(i).is_visible():
+                    visible = True
+                    break
+        except Exception:
+            visible = False
+        if not visible:
+            return
+        try:
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(350)
+        except Exception:
+            return
+
+
 async def return_platcore_list_from_preview(page: Page, monitor_url: str) -> None:
+    """Вернуться к списку pay-out. Модалка поверх списка ≠ уже на списке."""
     await dismiss_chakra_toasts(page)
     await dismiss_order_preview_modal(page)
+    await dismiss_any_platcore_modal(page)
+
+    url = (page.url or "").lower()
+    on_list_url = "pay-out" in url
     try:
-        await page.wait_for_selector(LIST_BODY, timeout=5_000)
-        return
+        q = parse_qs(urlparse(page.url or "").query)
+        has_deal = bool((q.get("dealId") or q.get("dealid") or [""])[0])
     except Exception:
-        pass
+        has_deal = "dealid=" in url
+
+    dialog_open = False
+    dialog = page.locator(
+        '[role="dialog"].chakra-modal__content, [role="dialog"]'
+    )
+    try:
+        for i in range(min(await dialog.count(), 6)):
+            if await dialog.nth(i).is_visible():
+                dialog_open = True
+                break
+    except Exception:
+        dialog_open = True
+
+    if on_list_url and not has_deal and not dialog_open:
+        try:
+            await page.wait_for_selector(LIST_BODY, timeout=3_000)
+            return
+        except Exception:
+            pass
+
     await page.goto(monitor_url, wait_until="domcontentloaded")
     await wait_for_list(page)
     await dismiss_chakra_toasts(page)
+    await dismiss_any_platcore_modal(page)
 
 
 def is_phase1_pick_recoverable(exc: PanicError) -> bool:

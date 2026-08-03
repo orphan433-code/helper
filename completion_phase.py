@@ -177,11 +177,62 @@ def preview_receipt_readiness(
 
     screens_dir = proofs_dir(cfg)
     downloads_dir = videos_dir(cfg)
-    threshold = float(session.video_min_usdt)
 
     awaiting = [
         d for d in session.deals if d.state == DealCompletionState.AWAITING_PROOF
     ]
+
+    # Только пропуски / уже закрыто — OCR не гоняем (UI не мигает «чек есть»)
+    if not awaiting:
+        deals_ui: list[dict[str, Any]] = []
+        for deal in session.deals:
+            state = deal.state.value
+            row: dict[str, Any] = {
+                "index": deal.index,
+                "order_id": deal.order_id or "",
+                "card": _card_tag(deal.account_digits),
+                "needs_video": bool(deal.needs_video),
+                "state": state,
+                "has_shot": False,
+                "has_video": False,
+                "ready": state in ("completed", "cancelled"),
+                "file_name": "",
+                "hint": "",
+                "can_rescan": False,
+            }
+            if state == "completed":
+                row["hint"] = "загружено"
+                row["has_shot"] = bool(deal.proof_path)
+                row["file_name"] = (
+                    Path(deal.proof_path).name if deal.proof_path else ""
+                )
+            elif state == "cancelled":
+                row["hint"] = "отменена"
+            elif state == "skipped":
+                row["hint"] = "пропуск банка — Отмена"
+            elif state == "failed":
+                row["hint"] = deal.error or "ошибка"
+                row["has_shot"] = bool(deal.proof_path)
+                row["has_video"] = bool(deal.video_path)
+                row["can_rescan"] = True
+                row["file_name"] = (
+                    Path(deal.proof_path).name if deal.proof_path else ""
+                )
+            deals_ui.append(row)
+        return {
+            "ok": True,
+            "folder": str(downloads_dir),
+            "files_found": 0,
+            "video_ready": False,
+            "video_name": "",
+            "ready_count": 0,
+            "awaiting_count": 0,
+            "total": len(session.deals),
+            "all_ready": False,
+            "deals": deals_ui,
+            "unmatched_files": [],
+        }
+
     large_awaiting = [d for d in awaiting if d.needs_video]
     video_path = None
     if large_awaiting:
@@ -192,11 +243,10 @@ def preview_receipt_readiness(
             folder=downloads_dir,
         )
 
-    candidates = [
-        d
-        for d in awaiting
-        if (not d.needs_video) or (video_path is not None)
-    ]
+    # Превью: матчим чеки и для крупных сделок без видео —
+    # чтобы UI показал «чек есть / видео нет». На реальной загрузке
+    # крупные без видео по-прежнему не consume'ятся.
+    candidates = list(awaiting)
     receipts = _scan_receipts_all_folders(
         session,
         cfg=cfg,
@@ -209,7 +259,7 @@ def preview_receipt_readiness(
     by_order = {m.deal.order_id: m for m in matches}
     matched_paths = {str(m.receipt.path.resolve()) for m in matches}
 
-    deals_ui: list[dict[str, Any]] = []
+    deals_ui = []
     ready_count = 0
     for deal in session.deals:
         state = deal.state.value
@@ -234,6 +284,10 @@ def preview_receipt_readiness(
             ready_count += 1
         elif state == "skipped":
             row["hint"] = "пропуск банка — Отмена"
+            row["has_shot"] = False
+            row["has_video"] = False
+            row["ready"] = False
+            row["file_name"] = ""
         elif state == "failed":
             row["hint"] = deal.error or "ошибка — Повторить / Новый файл"
             row["can_rescan"] = True
@@ -254,26 +308,23 @@ def preview_receipt_readiness(
                     row["has_video"] = video_path is not None
                     if video_path is not None:
                         row["ready"] = True
-                        row["hint"] = f"чек {match.receipt.path.name} + видео"
+                        row["hint"] = "чек и видео готовы"
                         ready_count += 1
                     else:
-                        row["hint"] = (
-                            f"чек есть ({match.receipt.path.name}), "
-                            f"нужно видео (>{threshold:g} USDT)"
-                        )
+                        row["hint"] = "чек есть, ждём видео"
                 else:
                     row["ready"] = True
                     row["has_video"] = False
-                    row["hint"] = f"найден: {match.receipt.path.name}"
+                    row["hint"] = "чек найден"
                     ready_count += 1
             else:
                 if deal.needs_video and video_path is None:
-                    row["hint"] = f"нужны чек + видео (>{threshold:g} USDT)"
+                    row["hint"] = "нужны чек и видео"
                 elif deal.needs_video:
                     row["has_video"] = True
-                    row["hint"] = "видео есть, ждём чек по карте"
+                    row["hint"] = "видео есть, ждём чек"
                 else:
-                    row["hint"] = "ждём чек в папке"
+                    row["hint"] = "ждём чек"
             row["can_rescan"] = False
         deals_ui.append(row)
 
@@ -569,6 +620,21 @@ async def scan_and_complete_once(
     awaiting = [
         d for d in session.deals if d.state == DealCompletionState.AWAITING_PROOF
     ]
+    skipped_n = sum(
+        1 for d in session.deals if d.state == DealCompletionState.SKIPPED
+    )
+    # Нечего матчить — не сканим папку и не пишем «чеки есть»
+    if not awaiting:
+        session.cancel_unlocked = True
+        if skipped_n:
+            notify_completion_progress(
+                session,
+                phase="waiting",
+                message=f"пропуск — Отмена ({skipped_n})",
+                allow_cancel=True,
+            )
+        return 0
+
     large_awaiting = [d for d in awaiting if d.needs_video]
     video_path: Path | None = None
     if large_awaiting:
@@ -622,7 +688,7 @@ async def scan_and_complete_once(
         notify_completion_progress(
             session,
             phase="processing",
-            message="Чеки в папке есть, но совпадений по карте нет",
+            message="В папке есть файлы, но карты не совпали",
         )
     elif large_awaiting and video_path is None:
         notify_completion_progress(

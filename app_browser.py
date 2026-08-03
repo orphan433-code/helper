@@ -311,8 +311,10 @@ def create_app() -> Any:
 
     @app.get("/api/poll_logs")
     async def poll_logs() -> dict[str, Any]:
-        text = await asyncio.to_thread(engine.api.poll_logs)
-        return {"ok": True, "text": text or ""}
+        events = await asyncio.to_thread(engine.api.poll_logs)
+        if isinstance(events, list):
+            return {"ok": True, "events": events, "text": ""}
+        return {"ok": True, "events": [], "text": events or ""}
 
     def _guard(method: str) -> dict[str, Any] | None:
         if engine.restarting:
@@ -353,6 +355,7 @@ def create_app() -> Any:
             allow_visa=body.get("allow_visa", True),
             allow_mastercard=body.get("allow_mastercard", False),
             max_empty_list_passes=body.get("max_empty_list_passes"),
+            from_pending=body.get("from_pending", False),
         )
 
     @app.post("/api/start_login")
@@ -369,6 +372,7 @@ def create_app() -> Any:
             allow_visa=body.get("allow_visa", True),
             allow_mastercard=body.get("allow_mastercard", False),
             max_empty_list_passes=body.get("max_empty_list_passes"),
+            from_pending=body.get("from_pending"),
         )
 
     @app.post("/api/start_decline")

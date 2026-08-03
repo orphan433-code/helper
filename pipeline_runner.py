@@ -26,6 +26,7 @@ from gui_hooks import enter_background, enter_foreground, set_automation_phase
 from job_control import JobStopped, begin_job, is_stopped, raise_if_stopped
 from logkit import info, ok, section, warn
 from platcore_pipeline import accept_deals_loop
+from platcore_pending import claim_pending_deals_loop
 from user_prompts import wait_user_confirm
 from validators import PanicError
 
@@ -91,11 +92,18 @@ async def run_pipeline() -> None:
     )
     try:
         raise_if_stopped()
+        from_pending = bool(pipe_cfg.get("from_pending", False))
         set_automation_phase("bank")
         enter_background()
-        accepted_deals, page_by_order = await accept_deals_loop(
-            session.context, cfg
-        )
+        if from_pending:
+            info("Режим: pending → Approve → банк → чеки (без Accept)")
+            accepted_deals, page_by_order = await claim_pending_deals_loop(
+                session.context, cfg
+            )
+        else:
+            accepted_deals, page_by_order = await accept_deals_loop(
+                session.context, cfg
+            )
 
         run_completion = comp_cfg.get("enabled", True) and pipe_cfg.get(
             "run_completion_after_batch", True

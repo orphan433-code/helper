@@ -22,6 +22,8 @@ pipeline:
   run_bank_after_accept: false
   run_completion_after_batch: true
   exit_after_run: true
+  # true = pending → Approve → банк → чеки (без Accept; сделки уже кинули в pending)
+  from_pending: false
 
 stage1:
   fake_accept: true
