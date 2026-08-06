@@ -1,4 +1,5 @@
 import { useConsole } from "@/store/console";
+import { clearTitleAttention, grabWindowAttention } from "@/lib/attention";
 
 /** Wire backend WebSocket eval API → Zustand (same window.* contract). */
 export function installWindowBridge() {
@@ -18,13 +19,18 @@ export function installWindowBridge() {
   window.appendCancelAlert = (payload) => sync().appendCancelAlert(payload);
   window.clearCancelAlerts = () => sync().clearCancelAlerts();
   window.setConfirmPrompt = (prompt, mode) => sync().setConfirmPrompt(prompt, mode);
-  window.setRecoveryPrompt = (message, detail, hint, summary, allowRetry) =>
+  window.setRecoveryPrompt = (message, detail, hint, summary, allowRetry) => {
     sync().setRecoveryPrompt(message, detail, hint, summary || {}, !!allowRetry);
-  window.hideRecoveryPrompt = () => sync().hideRecoveryPrompt();
+  };
+  window.hideRecoveryPrompt = () => {
+    sync().hideRecoveryPrompt();
+  };
   window.showConfirm = async (message, opts = {}) =>
     sync().openDialog({
       title: opts.title || "Подтверждение",
       body: message,
       danger: opts.danger,
     });
+  window.grabWindowAttention = grabWindowAttention;
+  window.clearTitleAttention = clearTitleAttention;
 }

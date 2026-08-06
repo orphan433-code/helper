@@ -84,12 +84,12 @@ export function AppShell() {
     <div className="relative min-h-screen">
       <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
         <LightRays
-          count={5}
-          color="rgba(148, 163, 184, 0.18)"
-          blur={40}
-          speed={20}
-          length="55vh"
-          className="opacity-90"
+          count={3}
+          color="rgba(148, 163, 184, 0.14)"
+          blur={24}
+          speed={28}
+          length="50vh"
+          className="opacity-80"
         />
       </div>
 

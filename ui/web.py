@@ -583,12 +583,30 @@ class TzkApi:
             "hideRecoveryPrompt();"
         )
         self._push_log("Полная остановка: браузер и контекст…", service="gui")
-        if self._subprocess is not None and self._subprocess.poll() is None:
-            self._subprocess.terminate()
+        try:
+            from core.hard_stop import kill_popen
+
+            kill_popen(self._subprocess)
+        except Exception:
+            if self._subprocess is not None and self._subprocess.poll() is None:
+                try:
+                    self._subprocess.terminate()
+                except Exception:
+                    pass
         loop = self._worker_loop
         task = self._worker_task
         if loop is not None and task is not None and not task.done():
             loop.call_soon_threadsafe(task.cancel)
+            try:
+                from core.browser_session import force_close_browser
+
+                fut = asyncio.run_coroutine_threadsafe(
+                    force_close_browser(reason="stop_job"),
+                    loop,
+                )
+                fut.result(timeout=1.5)
+            except Exception:
+                pass
         return self._ok()
 
     def confirm(self, kind: str = "receipts") -> dict[str, Any]:
@@ -996,6 +1014,7 @@ class TzkApi:
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
+                start_new_session=True,
             )
             assert self._subprocess.stdout is not None
             # Детали скрипта — только в терминал; в журнал — один итог.

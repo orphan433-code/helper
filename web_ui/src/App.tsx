@@ -39,15 +39,22 @@ export default function App() {
     window.addEventListener("pywebviewready", onReady);
     if (window.pywebview?.api) void boot();
 
-    const poll = window.setInterval(async () => {
-      try {
-        const events = await api().poll_logs();
-        if (Array.isArray(events)) ingestLogEvents(events);
-        else if (typeof events === "string" && events) appendLog(events);
-      } catch {
-        /* ignore */
-      }
-    }, 250);
+    let pollBusy = false;
+    const poll = window.setInterval(() => {
+      if (pollBusy || document.hidden) return;
+      pollBusy = true;
+      void (async () => {
+        try {
+          const events = await api().poll_logs();
+          if (Array.isArray(events)) ingestLogEvents(events);
+          else if (typeof events === "string" && events) appendLog(events);
+        } catch {
+          /* ignore */
+        } finally {
+          pollBusy = false;
+        }
+      })();
+    }, 1000);
 
     const idleWatch = window.setInterval(() => {
       const st = useConsole.getState();

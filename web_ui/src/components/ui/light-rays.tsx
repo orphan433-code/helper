@@ -57,7 +57,8 @@ const Ray = ({
   delay,
   duration,
   intensity,
-}: LightRay) => {
+  active,
+}: LightRay & { active: boolean }) => {
   return (
     <motion.div
       className="pointer-events-none absolute -top-[12%] left-[var(--ray-left)] h-[var(--light-rays-length)] w-[var(--ray-width)] origin-top -translate-x-1/2 rounded-full bg-linear-to-b from-[color-mix(in_srgb,var(--light-rays-color)_70%,transparent)] to-transparent opacity-0 mix-blend-multiply blur-[var(--light-rays-blur)]"
@@ -67,18 +68,26 @@ const Ray = ({
           "--ray-width": `${width}px`,
         } as CSSProperties
       }
-      initial={{ rotate: rotate }}
-      animate={{
-        opacity: [0, intensity, 0],
-        rotate: [rotate - swing, rotate + swing, rotate - swing],
-      }}
-      transition={{
-        duration: duration,
-        repeat: Infinity,
-        ease: "easeInOut",
-        delay: delay,
-        repeatDelay: duration * 0.1,
-      }}
+      initial={{ rotate: rotate, opacity: 0 }}
+      animate={
+        active
+          ? {
+              opacity: [0, intensity, 0],
+              rotate: [rotate - swing, rotate + swing, rotate - swing],
+            }
+          : { opacity: 0, rotate }
+      }
+      transition={
+        active
+          ? {
+              duration: duration,
+              repeat: Infinity,
+              ease: "easeInOut",
+              delay: delay,
+              repeatDelay: duration * 0.1,
+            }
+          : { duration: 0.2 }
+      }
     />
   );
 };
@@ -95,10 +104,24 @@ export function LightRays({
   ...props
 }: LightRaysProps) {
   const [rays, setRays] = useState<LightRay[]>([]);
+  const [active, setActive] = useState(true);
   const cycleDuration = Math.max(speed, 0.1);
 
   useEffect(() => {
+    const reduced =
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduced) {
+      setRays([]);
+      setActive(false);
+      return;
+    }
     setRays(createRays(count, cycleDuration));
+
+    const sync = () => setActive(!document.hidden);
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    return () => document.removeEventListener("visibilitychange", sync);
   }, [count, cycleDuration]);
 
   return (
@@ -139,9 +162,8 @@ export function LightRays({
             } as CSSProperties
           }
         />
-        {rays.map((ray) => (
-          <Ray key={ray.id} {...ray} />
-        ))}
+        {active &&
+          rays.map((ray) => <Ray key={ray.id} {...ray} active={active} />)}
       </div>
     </div>
   );

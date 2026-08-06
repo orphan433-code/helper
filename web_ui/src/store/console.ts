@@ -9,6 +9,7 @@ import {
   type RecoveryState,
   type StatusKind,
 } from "@/lib/types";
+import { clearTitleAttention, grabWindowAttention } from "@/lib/attention";
 
 function emptyProgress(title: string): ProgressPanel {
   return {
@@ -404,16 +405,19 @@ export const useConsole = create<ConsoleState>((set, get) => ({
       waitingConfirm: false,
     });
     get().appendLog(`!!! ${message}\n${detail || ""}`);
+    grabWindowAttention("⚠ " + (message || "Ошибка"), detail || "");
   },
 
-  hideRecoveryPrompt: () =>
+  hideRecoveryPrompt: () => {
+    clearTitleAttention();
     set({
       recovery: {
         ...get().recovery,
         open: false,
         continueLabel: "Пропустить сделку",
       },
-    }),
+    });
+  },
 
   openDialog: (opts) =>
     new Promise<boolean>((resolve) => {

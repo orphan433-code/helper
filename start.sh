@@ -35,17 +35,21 @@ if [[ ! -f web_ui/dist/index.html ]]; then
   fi
 fi
 
-(
-  for _ in $(seq 1 60); do
-    if curl -sf -o /dev/null "$URL" 2>/dev/null; then
-      open "$URL"
-      exit 0
-    fi
-    sleep 0.25
-  done
-  open "$URL" 2>/dev/null || true
-) &
+cleanup() {
+  # Страховка: python уже сделал hard stop, но Chromium иногда выживает
+  if [[ -x .venv/bin/python ]]; then
+    .venv/bin/python -c 'from core.hard_stop import kill_browser_profiles, wipe_children_of_self; kill_browser_profiles(); wipe_children_of_self()' 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
 
 echo "TJSBOT → $URL"
-echo "Остановка: Ctrl+C"
-exec .venv/bin/python -m ui.browser
+echo "Остановка: Ctrl+C (полное убийство процессов)"
+# Не exec: EXIT-trap подчистит хвосты после python
+.venv/bin/python -m ui.browser || true
+
+echo
+echo "Сервер остановлен."
+# Держим терминал открытым — иначе некоторые IDE закрывают вкладку сразу
+# после выхода процесса (Cursor/VSCode: close-on-exit для терминала).
+read -r -p "Нажми Enter, чтобы закрыть окно… " _ANSWER || true

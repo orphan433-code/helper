@@ -75,6 +75,8 @@ declare global {
       allowRetry: boolean,
     ) => void;
     hideRecoveryPrompt?: () => void;
+    grabWindowAttention?: (prefix?: string, detail?: string) => void;
+    clearTitleAttention?: () => void;
     showConfirm?: (
       message: string,
       opts?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean },

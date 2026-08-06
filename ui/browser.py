@@ -41,6 +41,8 @@ FAVICON_PUBLIC = WEB_UI / "public" / "favicon.svg"
 HOST = "127.0.0.1"
 PORT = 8765
 
+_ACTIVE_ENGINE: Any = None
+
 
 class EventHub:
     """Рассылка UI-событий подключённым WebSocket-клиентам."""
@@ -153,6 +155,13 @@ class EngineController:
             stop_cancel_watch_now()
         except Exception:
             pass
+        try:
+            from core.hard_stop import kill_browser_profiles, kill_popen
+
+            kill_popen(getattr(self.api, "_subprocess", None))
+            kill_browser_profiles()
+        except Exception:
+            pass
         self.hub.broadcast({"type": "engine", "engine_on": False})
         return {"ok": True, "engine_on": False}
 
@@ -206,8 +215,13 @@ class EngineController:
         )
 
         def _exit() -> None:
-            time.sleep(0.35)
-            os._exit(0)
+            time.sleep(0.2)
+            try:
+                from core.hard_stop import hard_exit
+
+                hard_exit(getattr(self, "api", None), code=0)
+            except Exception:
+                os._exit(0)
 
         threading.Thread(target=_exit, name="tzk-shutdown", daemon=True).start()
         return {"ok": True, "shutting_down": True}
@@ -223,6 +237,7 @@ def _inject_bridge(html: str) -> str:
 
 
 def create_app() -> Any:
+    global _ACTIVE_ENGINE
     if FastAPI is None:
         raise SystemExit(
             "Нужны fastapi и uvicorn:\n"
@@ -231,6 +246,7 @@ def create_app() -> Any:
 
     hub = EventHub()
     engine = EngineController(hub)
+    _ACTIVE_ENGINE = engine
     app = FastAPI(title="Tzk Browser", docs_url=None, redoc_url=None)
 
     READ_ALWAYS = {
@@ -540,9 +556,18 @@ def main() -> None:
 
     logging.getLogger("uvicorn.access").addFilter(_QuietAccessFilter())  # type: ignore[arg-type]
 
+    def _hard_signal(_signum: int, _frame: Any) -> None:
+        api = None
+        eng = _ACTIVE_ENGINE
+        if eng is not None:
+            api = getattr(eng, "api", None)
+        from core.hard_stop import hard_exit
+
+        hard_exit(api, code=0)
+
     print(f"Tzk Browser → http://{HOST}:{PORT}")
-    print("Pywebview (app_web.py) не затронут. Ctrl+C — остановить HTTP.")
-    uvicorn.run(
+    print("Ctrl+C — полная остановка всех процессов.")
+    config = uvicorn.Config(
         "ui.browser:create_app",
         factory=True,
         host=HOST,
@@ -550,6 +575,12 @@ def main() -> None:
         log_level="info",
         reload=False,
     )
+    server = uvicorn.Server(config)
+    # uvicorn (0.38+) сам вешает свой handle_exit на SIGINT/SIGTERM внутри
+    # capture_signals() и ждёт graceful "background tasks" — нам это не
+    # нужно: подменяем его обработчик на мгновенный hard kill.
+    server.handle_exit = _hard_signal  # type: ignore[method-assign]
+    server.run()
 
 
 if __name__ == "__main__":
