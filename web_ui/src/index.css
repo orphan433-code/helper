@@ -1,0 +1,188 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --animate-rippling: rippling var(--duration, 600ms) ease-out;
+  --animate-shiny-text: shiny-text 3s ease-in-out infinite;
+  --animate-status-morph: status-morph 0.28s ease-out;
+
+  @keyframes rippling {
+    0% {
+      opacity: 1;
+    }
+    100% {
+      transform: scale(2);
+      opacity: 0;
+    }
+  }
+
+  @keyframes shiny-text {
+    0%,
+    90%,
+    100% {
+      background-position: calc(-100% - var(--shiny-width)) 0;
+    }
+    30%,
+    60% {
+      background-position: calc(100% + var(--shiny-width)) 0;
+    }
+  }
+
+  @keyframes status-morph {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+      filter: blur(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+      filter: blur(0);
+    }
+  }
+}
+
+:root {
+  --radius: 0.85rem;
+  /* Light Bento — paper + slate ink (no teal) */
+  --background: #f7f8fa;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #1e293b;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #334155;
+  --muted: #eef2f6;
+  --muted-foreground: #64748b;
+  --accent: #f1f5f9;
+  --accent-foreground: #1e293b;
+  --destructive: #dc2626;
+  --border: #e2e8f0;
+  --input: #e2e8f0;
+  --ring: #475569;
+  --ok: #334155;
+  --warn: #d97706;
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.04);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    color-scheme: light;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased min-h-screen;
+    background-image: linear-gradient(180deg, #fafbfc 0%, #f4f6f8 100%);
+    background-attachment: fixed;
+  }
+  #root {
+    min-height: 100vh;
+  }
+}
+
+@keyframes soft-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(15, 118, 110, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(15, 118, 110, 0);
+  }
+}
+
+.btn-shimmer {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+.btn-shimmer::before {
+  content: "";
+  position: absolute;
+  inset: -40%;
+  z-index: -2;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.7) 12%,
+    transparent 28%
+  );
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.btn-shimmer:hover::before,
+.btn-shimmer:focus-visible::before {
+  opacity: 1;
+}
+.btn-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--primary);
+}
+
+.btn-glare {
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-press {
+  transition: transform 0.12s ease, box-shadow 0.2s ease;
+}
+.btn-press:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.card-lift {
+  box-shadow: var(--shadow-card);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.card-lift:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(15, 23, 42, 0.05), 0 14px 32px rgba(15, 23, 42, 0.08);
+}
+
+.step-active {
+  border-color: color-mix(in oklab, var(--primary) 25%, white);
+  background: #ffffff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-press:active:not(:disabled),
+  .card-lift:hover {
+    transform: none;
+  }
+}

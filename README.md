@@ -89,6 +89,12 @@ cd ~/Desktop/TJSBOT && bash start.sh
 
 ---
 
+## Структура кода
+
+Пакеты в корне: `platcore/`, `bank/`, `device/`, `notify/`, `completion/`, `ui/`, `core/`, `pipeline/`.  
+Запуск: `bash start.sh` → `python -m ui.browser`.  
+Подробности: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Локальные файлы
 
 В репозиторий не попадают:
@@ -97,3 +103,4 @@ cd ~/Desktop/TJSBOT && bash start.sh
 - `config.yaml`
 - `platcore-decline/config.yaml`
 - `.env`
+- `runtime/`

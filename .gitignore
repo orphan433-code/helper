@@ -41,5 +41,11 @@ browser_profile/
 # ── собранные артефакты ───────────────────────────────────
 *.app/
 dist/
+!web_ui/dist/
+!web_ui/dist/**
 build/
 *.zip
+web_ui/node_modules/
+
+# локальный runtime state
+runtime/

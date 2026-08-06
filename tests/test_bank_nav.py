@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from bank_nav import (  # noqa: E402
+from bank.nav import (  # noqa: E402
     _nav_cfg,
     find_payments_tab,
     hit_in_region,
@@ -19,7 +19,7 @@ from bank_nav import (  # noqa: E402
     payments_tab_fallback_hit,
     should_tap_payments_tab,
 )
-from ocr import OcrHit  # noqa: E402
+from device.ocr import OcrHit  # noqa: E402
 
 REGION = (20, 235, 278, 627)
 
@@ -84,10 +84,18 @@ class PaymentsTabTests(unittest.TestCase):
 
     def test_other_countries_edge_tap_stays_inside_mirror(self) -> None:
         transfers = _hit("Переводы", 60, 600)
+        # Фиксируем nav — не зависим от live config.yaml
+        nav = {
+            **self.nav,
+            "other_edge_x_ratio": 0.995,
+            "other_edge_y_offset": 68.0,
+            "other_edge_right_inset": 1.0,
+        }
 
-        x, y = other_countries_edge_tap_xy(transfers, REGION, self.nav)
+        x, y = other_countries_edge_tap_xy(transfers, REGION, nav)
 
-        self.assertAlmostEqual(x, 297.0, places=1)
+        # 20 + 278*0.995 = 296.61, clamp inset=1 → 296.61
+        self.assertAlmostEqual(x, 296.61, places=2)
         self.assertAlmostEqual(y, 668.0, places=1)
         self.assertLess(x, REGION[0] + REGION[2])
 

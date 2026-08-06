@@ -24,6 +24,17 @@ if ! venv_ok; then
   exit 1
 fi
 
+# Build frontend if missing (browser UI)
+if [[ ! -f web_ui/dist/index.html ]]; then
+  if command -v npm >/dev/null 2>&1; then
+    echo "Собираю web UI…"
+    (cd web_ui && npm install && npm run build)
+  else
+    echo "Нет npm и нет web_ui/dist — поставь Node.js или собери UI заранее." >&2
+    exit 1
+  fi
+fi
+
 (
   for _ in $(seq 1 60); do
     if curl -sf -o /dev/null "$URL" 2>/dev/null; then
@@ -37,4 +48,4 @@ fi
 
 echo "TJSBOT → $URL"
 echo "Остановка: Ctrl+C"
-exec .venv/bin/python app_browser.py
+exec .venv/bin/python -m ui.browser

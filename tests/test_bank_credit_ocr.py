@@ -10,8 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from bank_form import find_expected_credit_amount_anywhere  # noqa: E402
-from ocr import OcrHit  # noqa: E402
+from bank.form import find_expected_credit_amount_anywhere  # noqa: E402
+from device.ocr import OcrHit  # noqa: E402
 
 
 def _hit(text: str, x: float, y: float) -> OcrHit:

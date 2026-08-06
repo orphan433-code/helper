@@ -116,8 +116,15 @@
     },
   };
 
-  /* ── Status bar: only restart + job stop ── */
+  /* ── Status bar: legacy UI only (React dock owns controls) ── */
   function ensureControls() {
+    const isLegacy = !!document.getElementById("status-bar");
+    if (!isLegacy) {
+      const leftover = document.getElementById("browser-server-bar");
+      if (leftover) leftover.remove();
+      return;
+    }
+
     let bar = document.getElementById("browser-server-bar");
     if (!bar) {
       bar = document.createElement("div");
@@ -141,8 +148,6 @@
         else cluster.appendChild(bar);
       } else if (statusBar) {
         statusBar.appendChild(bar);
-      } else {
-        document.body.prepend(bar);
       }
     }
 

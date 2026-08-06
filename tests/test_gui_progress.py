@@ -5,14 +5,14 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from completion_session import CompletionSession, DealCompletionState, SessionDeal
-from gui_progress import (
+from completion.session import CompletionSession, DealCompletionState, SessionDeal
+from ui.progress import (
     PipelineProgressTracker,
     notify_completion_progress,
     set_completion_progress_handler,
     set_pipeline_progress_handler,
 )
-from models import RowPreview, TzkDeal
+from core.models import RowPreview, TzkDeal
 
 
 class GuiProgressTests(unittest.TestCase):
