@@ -38,7 +38,11 @@ from gui_progress import (
     set_completion_progress_handler,
     set_pipeline_progress_handler,
 )
-from gui_settings import apply_gui_settings
+from gui_settings import (
+    apply_gui_settings,
+    apply_redirect_filters,
+    redirect_filter_settings,
+)
 from job_control import begin_job, request_stop
 from pipeline_runner import run_login, run_pipeline
 from self_update import apply_update, read_version, update_status
@@ -259,6 +263,7 @@ class TzkApi:
         cfg = load_config()
         pipe = cfg.get("pipeline") or {}
         val = cfg.get("validation") or {}
+        redir = redirect_filter_settings()
         adb_text, adb_ok = _adb_status_text()
         serial = bank_settings(cfg).get("adb_serial") or ""
         return {
@@ -269,6 +274,8 @@ class TzkApi:
             "allow_visa": bool(val.get("allow_visa", True)),
             "allow_mastercard": bool(val.get("allow_mastercard", False)),
             "from_pending": bool(pipe.get("from_pending", False)),
+            "redirect_skip_bog": bool(redir.get("skip_bog", False)),
+            "redirect_visa_only": bool(redir.get("visa_only", False)),
             "screens_dir": str(proofs_dir(cfg)),
             "videos_dir": str(videos_dir(cfg)),
             "video_min_usdt": float(
@@ -343,6 +350,28 @@ class TzkApi:
             return self._ok(message=msg + "\n")
         except (ValueError, TypeError) as exc:
             return self._err(f"Некорректное значение: {exc}")
+
+    def save_redirect_filters(
+        self,
+        skip_bog: bool = False,
+        visa_only: bool = False,
+    ) -> dict[str, Any]:
+        """Сохранить фильтры редиректа в platcore-decline/config.yaml."""
+        try:
+            ensure_local_configs()
+            saved = apply_redirect_filters(
+                skip_bog=bool(skip_bog),
+                visa_only=bool(visa_only),
+            )
+            parts = []
+            if saved.get("skip_bog"):
+                parts.append("пропуск BoG")
+            if saved.get("visa_only"):
+                parts.append("только Visa")
+            hint = ", ".join(parts) if parts else "выключены"
+            return self._ok(message=f"[OK] Фильтры редиректа: {hint}\n")
+        except Exception as exc:
+            return self._err(f"Не удалось сохранить фильтры: {exc}")
 
     def start_login(self) -> dict[str, Any]:
         if self._running:
@@ -425,7 +454,7 @@ class TzkApi:
         """
         ids = [str(x).strip() for x in (trader_ids or []) if str(x).strip()]
         if not ids:
-            return self._err("Выбери хотя бы один аккаунт (104.1 / 104.2)")
+            return self._err("Выбери хотя бы один аккаунт (104.1 / 104.2 / 104.3)")
         status = str(deal_status or "new").strip().lower() or "new"
         if status not in ("new", "pending"):
             return self._err("deal_status: только new или pending")
@@ -441,6 +470,13 @@ class TzkApi:
             return self._err(f"Некорректные параметры редиректа: {exc}")
         if max_n is not None and max_n < 1:
             return self._err("Количество редиректов должно быть ≥ 1")
+        try:
+            apply_redirect_filters(
+                skip_bog=bool(skip_bog),
+                visa_only=bool(visa_only),
+            )
+        except Exception:
+            pass
         return self._start_decline_or_redirect(
             redirect=True,
             trader_ids=ids,
@@ -965,12 +1001,28 @@ class TzkApi:
             )
             assert self._subprocess.stdout is not None
             # Детали скрипта — только в терминал; в журнал — один итог.
+            # При падении сохраняем хвост ошибок для UI.
+            err_tail: list[str] = []
             for line in self._subprocess.stdout:
                 try:
                     sys.__stdout__.write(line)
                     sys.__stdout__.flush()
                 except Exception:
                     pass
+                text = line.rstrip("\n")
+                low = text.lower()
+                if (
+                    "error" in low
+                    or "traceback" in low
+                    or "exception" in low
+                    or text.startswith("SystemExit")
+                    or "IndentationError" in text
+                    or "SyntaxError" in text
+                    or text.startswith("[ERROR]")
+                ):
+                    err_tail.append(text.strip())
+                    if len(err_tail) > 8:
+                        err_tail = err_tail[-8:]
                 if not line.startswith("TZK_DECLINE_RESULT\t"):
                     continue
                 raw = line.split("\t", 1)[1].strip()
@@ -1008,8 +1060,12 @@ class TzkApi:
                         service=svc,
                     )
             else:
+                detail = ""
+                if err_tail:
+                    detail = " — " + " | ".join(err_tail[-3:])
+                msg = f"{done_word}: ошибка (код {code}){detail}"
                 self._push_log(
-                    f"{done_word}: ошибка (код {code})",
+                    msg,
                     level="error",
                     service=svc,
                     status="error",
@@ -1023,7 +1079,7 @@ class TzkApi:
                             "redirected": 0,
                             "failed": 1,
                             "total": 0,
-                            "message": f"Ошибка ({done_word.lower()}, код {code})",
+                            "message": msg,
                             "deals": [],
                         }
                     )

@@ -237,6 +237,7 @@ def create_app() -> Any:
         "poll_logs",
         "check_adb",
         "save_settings",
+        "save_redirect_filters",
         "open_screens_folder",
         "open_videos_folder",
         "get_update_status",
@@ -356,6 +357,14 @@ def create_app() -> Any:
             allow_mastercard=body.get("allow_mastercard", False),
             max_empty_list_passes=body.get("max_empty_list_passes"),
             from_pending=body.get("from_pending", False),
+        )
+
+    @app.post("/api/save_redirect_filters")
+    async def save_redirect_filters(body: dict[str, Any]) -> Any:
+        return await _call(
+            "save_redirect_filters",
+            skip_bog=body.get("skip_bog", False),
+            visa_only=body.get("visa_only", False),
         )
 
     @app.post("/api/start_login")

@@ -2879,6 +2879,16 @@
                     <span class="seg-knob" aria-hidden="true"></span>
                     104.2
                   </label>
+                  <label>
+                    <input
+                      id="redir-104-3"
+                      type="checkbox"
+                      checked
+                      data-trader-id="fcfc51a9-0171-41ef-9e67-ba01757ec603"
+                    />
+                    <span class="seg-knob" aria-hidden="true"></span>
+                    104.3
+                  </label>
                 </div>
               </div>
 
@@ -3369,46 +3379,56 @@
       }
 
       function buildBeepWavDataUri() {
-        // Громкий двухтональный бип ~0.55 с, 22050 Hz mono 8-bit PCM
-        const sampleRate = 22050;
-        const duration = 0.55;
+        // Один мягкий чистый chime ~0.7 с, 44100 Hz mono 16-bit PCM
+        const sampleRate = 44100;
+        const duration = 0.72;
         const n = Math.floor(sampleRate * duration);
-        const data = new Uint8Array(44 + n);
-        const view = new DataView(data.buffer);
+        const dataBytes = 44 + n * 2;
+        const buffer = new ArrayBuffer(dataBytes);
+        const view = new DataView(buffer);
         const writeStr = (offset, str) => {
           for (let i = 0; i < str.length; i++)
-            data[offset + i] = str.charCodeAt(i);
+            view.setUint8(offset + i, str.charCodeAt(i));
         };
         writeStr(0, "RIFF");
-        view.setUint32(4, 36 + n, true);
+        view.setUint32(4, 36 + n * 2, true);
         writeStr(8, "WAVE");
         writeStr(12, "fmt ");
         view.setUint32(16, 16, true);
         view.setUint16(20, 1, true);
         view.setUint16(22, 1, true);
         view.setUint32(24, sampleRate, true);
-        view.setUint32(28, sampleRate, true);
-        view.setUint16(32, 1, true);
-        view.setUint16(34, 8, true);
+        view.setUint32(28, sampleRate * 2, true);
+        view.setUint16(32, 2, true);
+        view.setUint16(34, 16, true);
         writeStr(36, "data");
-        view.setUint32(40, n, true);
+        view.setUint32(40, n * 2, true);
+        const attack = 0.045;
         for (let i = 0; i < n; i++) {
           const t = i / sampleRate;
-          const freq = t < 0.22 ? 980 : 740;
-          const env = Math.min(1, t * 40) * Math.max(0, 1 - (t - 0.08) / 0.47);
-          // громче + лёгкая 2-я гармоника, чтобы слышно на макбуке
+          const env =
+            t < attack
+              ? t / attack
+              : Math.exp(-(t - attack) * 3.4);
+          // Тёплый аккорд C–E–G одним ударом (без повторов)
           const sample =
-            (Math.sin(2 * Math.PI * freq * t) * 0.72 +
-              Math.sin(2 * Math.PI * freq * 2 * t) * 0.22) *
-            env;
-          data[44 + i] = Math.max(
-            0,
-            Math.min(255, Math.floor(128 + sample * 127)),
+            (Math.sin(2 * Math.PI * 523.25 * t) * 0.52 +
+              Math.sin(2 * Math.PI * 659.25 * t) * 0.36 +
+              Math.sin(2 * Math.PI * 783.99 * t) * 0.22 +
+              Math.sin(2 * Math.PI * 1046.5 * t) * 0.08) *
+            env *
+            0.95;
+          const clipped = Math.max(-1, Math.min(1, sample));
+          view.setInt16(
+            44 + i * 2,
+            Math.floor(clipped * 32767),
+            true,
           );
         }
+        const bytes = new Uint8Array(buffer);
         let binary = "";
-        for (let i = 0; i < data.length; i++)
-          binary += String.fromCharCode(data[i]);
+        for (let i = 0; i < bytes.length; i++)
+          binary += String.fromCharCode(bytes[i]);
         return "data:audio/wav;base64," + btoa(binary);
       }
 
@@ -3416,7 +3436,13 @@
 
       function playSoftAlert(opts) {
         const loud = !!(opts && opts.loud);
-        const peak = loud ? 0.72 : 0.42;
+        const peak = loud ? 0.88 : 0.52;
+        const vol = loud ? 1 : 0.78;
+        // В фоне WebAudio часто глушится — один HTMLAudio, без дублей
+        if (document.hidden) {
+          playAlertHtmlAudio(vol);
+          return;
+        }
         let played = false;
         try {
           const ctx = getAlertAudioCtx();
@@ -3425,40 +3451,28 @@
               const now = ctx.currentTime;
               const master = ctx.createGain();
               master.gain.setValueAtTime(0.001, now);
-              master.gain.linearRampToValueAtTime(peak, now + 0.015);
-              master.gain.linearRampToValueAtTime(
-                0.001,
-                now + (loud ? 0.7 : 0.5),
-              );
+              master.gain.linearRampToValueAtTime(peak, now + 0.045);
+              master.gain.exponentialRampToValueAtTime(0.001, now + 0.72);
               master.connect(ctx.destination);
-              const tones = loud
-                ? [
-                    [980, 0],
-                    [740, 0.18],
-                    [980, 0.36],
-                  ]
-                : [
-                    [880, 0],
-                    [660, 0.13],
-                  ];
-              tones.forEach(([freq, offset]) => {
+              // Один мягкий аккорд одновременно — без серии бипов
+              const partials = [
+                [523.25, 0.55],
+                [659.25, 0.38],
+                [783.99, 0.24],
+                [1046.5, 0.1],
+              ];
+              partials.forEach(([freq, amp]) => {
                 const osc = ctx.createOscillator();
                 const g = ctx.createGain();
-                osc.type = loud ? "square" : "sine";
+                osc.type = "sine";
                 osc.frequency.value = freq;
-                g.gain.setValueAtTime(0.001, now + offset);
-                g.gain.linearRampToValueAtTime(
-                  loud ? 0.55 : 1,
-                  now + offset + 0.02,
-                );
-                g.gain.linearRampToValueAtTime(
-                  0.001,
-                  now + offset + (loud ? 0.22 : 0.26),
-                );
+                g.gain.setValueAtTime(0.001, now);
+                g.gain.linearRampToValueAtTime(amp, now + 0.045);
+                g.gain.exponentialRampToValueAtTime(0.001, now + 0.7);
                 osc.connect(g);
                 g.connect(master);
-                osc.start(now + offset);
-                osc.stop(now + offset + (loud ? 0.28 : 0.3));
+                osc.start(now);
+                osc.stop(now + 0.78);
               });
               played = true;
             };
@@ -3466,20 +3480,14 @@
               ctx
                 .resume()
                 .then(start)
-                .catch(() => playAlertHtmlAudio(loud ? 1 : 0.85));
+                .catch(() => playAlertHtmlAudio(vol));
             } else {
               start();
             }
           }
         } catch (_) {}
-        // HTMLAudio всегда дублируем на ошибках — WebAudio в фоне часто тихий/глушится
-        setTimeout(() => {
-          playAlertHtmlAudio(loud ? 1 : played ? 0.7 : 0.85);
-        }, 30);
-        if (loud) {
-          setTimeout(() => playAlertHtmlAudio(1), 420);
-          setTimeout(() => playAlertHtmlAudio(1), 840);
-        }
+        // Fallback только если WebAudio не сыграл — без повторов
+        if (!played) playAlertHtmlAudio(vol);
       }
 
       function playAlertHtmlAudio(volume) {
@@ -3504,7 +3512,8 @@
             badge: faviconBaseHref,
             tag: "tzk-recovery",
             renotify: true,
-            silent: false,
+            // Свой chime уже играет — системный ding не дублируем
+            silent: true,
           });
           n.onclick = () => {
             try {
@@ -5286,6 +5295,7 @@
         [
           "redir-104-1",
           "redir-104-2",
+          "redir-104-3",
           "redir-max",
           "redir-min-amount",
           "redir-max-amount",
@@ -5356,6 +5366,10 @@
         $("allow-visa").checked = state.allow_visa !== false;
         $("allow-mastercard").checked = !!state.allow_mastercard;
         if ($("from-pending")) $("from-pending").checked = !!state.from_pending;
+        if ($("redir-skip-bog"))
+          $("redir-skip-bog").checked = !!state.redirect_skip_bog;
+        if ($("redir-visa-only"))
+          $("redir-visa-only").checked = !!state.redirect_visa_only;
         $("media-dir").textContent =
           state.videos_dir || state.screens_dir || "~/Downloads";
         if (state.video_min_usdt != null && state.video_min_usdt !== "") {
@@ -5707,7 +5721,7 @@
 
       function collectRedirectTraderIds() {
         const ids = [];
-        ["redir-104-1", "redir-104-2"].forEach((id) => {
+        ["redir-104-1", "redir-104-2", "redir-104-3"].forEach((id) => {
           const el = $(id);
           if (el && el.checked && el.dataset.traderId) {
             ids.push(el.dataset.traderId);
@@ -5721,7 +5735,7 @@
         const traderIds = collectRedirectTraderIds();
         if (!traderIds.length) {
           await showAlert(
-            "Выберите хотя бы один аккаунт: 104.1 или 104.2",
+            "Выберите хотя бы один аккаунт: 104.1, 104.2 или 104.3",
             "Передача сделок",
           );
           return;
@@ -5739,6 +5753,7 @@
         const labels = [];
         if ($("redir-104-1").checked) labels.push("104.1");
         if ($("redir-104-2").checked) labels.push("104.2");
+        if ($("redir-104-3").checked) labels.push("104.3");
         const amtHint =
           [minRaw ? `от ${minRaw}` : null, maxRaw ? `до ${maxRaw}` : null]
             .filter(Boolean)
@@ -5795,6 +5810,27 @@
       $("btn-redirect").onclick = () => apiCall(() => runRedirect("new"));
       $("btn-redirect-pending").onclick = () =>
         apiCall(() => runRedirect("pending"));
+
+      function persistRedirectFilters() {
+        const skipBog = !!($("redir-skip-bog") && $("redir-skip-bog").checked);
+        const visaOnly = !!(
+          $("redir-visa-only") && $("redir-visa-only").checked
+        );
+        if (
+          !window.pywebview ||
+          !window.pywebview.api ||
+          typeof window.pywebview.api.save_redirect_filters !== "function"
+        ) {
+          return;
+        }
+        window.pywebview.api
+          .save_redirect_filters(skipBog, visaOnly)
+          .catch(() => {});
+      }
+      ["redir-skip-bog", "redir-visa-only"].forEach((id) => {
+        const el = $(id);
+        if (el) el.addEventListener("change", persistRedirectFilters);
+      });
 
       $("btn-copy-log").onclick = async (ev) => {
         if (ev) {

@@ -55,6 +55,11 @@
           max_empty_list_passes,
           from_pending: !!from_pending,
         }),
+      save_redirect_filters: (skip_bog, visa_only) =>
+        apiPost("/api/save_redirect_filters", {
+          skip_bog: !!skip_bog,
+          visa_only: !!visa_only,
+        }),
       start_pipeline: (
         max_deals,
         min_amount,

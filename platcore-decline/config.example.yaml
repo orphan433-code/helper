@@ -33,6 +33,9 @@ bank_redirect:
   max_per_run: 5
   min_amount: null
   max_amount: null
+  # Фильтры UI (сохраняются между сессиями)
+  skip_bog: false      # не редиректить Bank of Georgia / 548888…
+  visa_only: false     # только карты Visa (4…)
   skip_card_prefixes:
     - "548888"
   skip_bank_patterns:
@@ -44,3 +47,5 @@ bank_redirect:
       id: "REPLACE_WITH_TRADER_UUID_1"
     - label: "104.2"
       id: "REPLACE_WITH_TRADER_UUID_2"
+    - label: "104.3"
+      id: "REPLACE_WITH_TRADER_UUID_3"

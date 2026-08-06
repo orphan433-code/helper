@@ -572,13 +572,24 @@ async def run(args: argparse.Namespace) -> int:
         cfg, bank_preset=bank_preset
     )
     skip_prefixes, skip_bank_patterns = _redirect_skip_rules(cfg)
-    # По умолчанию все подряд; --skip-bog — не редиректить BOG/548888
-    skip_bog = bool(do_redirect and getattr(args, "skip_bog", False))
-    # --visa-only — редиректить только карты Visa (4…)
-    visa_only = bool(do_redirect and getattr(args, "visa_only", False))
+    red = _redirect_cfg(cfg) if do_redirect else {}
+    # CLI --skip-bog / --visa-only включают; иначе берём из config
+    skip_bog = bool(
+        do_redirect
+        and (
+            getattr(args, "skip_bog", False)
+            or bool(red.get("skip_bog", False))
+        )
+    )
+    visa_only = bool(
+        do_redirect
+        and (
+            getattr(args, "visa_only", False)
+            or bool(red.get("visa_only", False))
+        )
+    )
 
     if do_redirect:
-        red = _redirect_cfg(cfg)
         traders = _resolve_active_traders(
             cfg,
             cli_ids=list(getattr(args, "trader_ids", None) or []),
@@ -872,7 +883,7 @@ def main() -> None:
         action="append",
         dest="trader_labels",
         default=None,
-        help="Метка из config (104.1 / 104.2), можно несколько",
+        help="Метка из config (104.1 / 104.2 / 104.3), можно несколько",
     )
     parser.add_argument("--max-per-run", type=int, default=None)
     parser.add_argument("--min-amount", type=float, default=None)
