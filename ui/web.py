@@ -64,12 +64,20 @@ PYTHON = next((p for p in _PYTHON_CANDIDATES if p.is_file()), _PYTHON_CANDIDATES
 def _adb_status_text() -> tuple[str, bool]:
     """(текст для UI, устройство подключено)."""
     try:
-        from device.adb import get_display_size, pick_serial, require_device
+        from device.adb import (
+            adb_bin,
+            get_display_size,
+            invalidate_serial_cache,
+            pick_serial,
+            require_device,
+        )
 
+        invalidate_serial_cache()
         serial = require_device()
         w, h = get_display_size()
         label = serial or pick_serial() or "device"
-        return f"{label} — {w}×{h}", True
+        kind = "wifi" if (serial and (":" in serial or "_adb-tls" in serial)) else "usb"
+        return f"{label} ({kind}) — {w}×{h} [{adb_bin()}]", True
     except Exception as exc:
         return f"не подключён ({exc})", False
 
@@ -739,7 +747,7 @@ class TzkApi:
                 phone_media=media,
             )
         return self._ok(
-            message=report + "Подключи телефон: USB debugging, `adb devices`.\n",
+            message=report + "Подключи телефон: USB или Wi‑Fi debugging, `adb devices`.\n",
             adb_device=adb_text,
             adb_ok=False,
             needs_device=True,

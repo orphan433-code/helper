@@ -13,6 +13,13 @@ export type DealRow = {
   order_id?: string;
   has_shot?: boolean;
   has_video?: boolean;
+  needs_video?: boolean;
+  preview_ready?: boolean;
+  preview_hint?: string;
+  file_name?: string;
+  can_cancel?: boolean;
+  can_retry?: boolean;
+  can_rescan?: boolean;
 };
 
 export type ProgressPanel = {
@@ -26,6 +33,10 @@ export type ProgressPanel = {
   success?: string;
   errorDetail?: string;
   hasErrors?: boolean;
+  /** 0..1 для полоски; undefined = pulse при processing */
+  progress?: number;
+  phase?: string;
+  allowCancel?: boolean;
 };
 
 export type CancelAlert = {

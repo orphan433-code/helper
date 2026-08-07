@@ -58,6 +58,7 @@ human:
 
 bank:
   device_mode: android
+  # null = авто: USB, иначе Wi‑Fi (IP:port / wireless). Явно: "SERIAL" или "192.168.1.5:5555"
   adb_serial: null
 
   # --- PIN ---

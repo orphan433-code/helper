@@ -1,8 +1,10 @@
+import { useState } from "react";
 import {
   Download,
   FileText,
   LayoutDashboard,
   ListOrdered,
+  Loader2,
   Power,
   RotateCcw,
   Square,
@@ -27,11 +29,12 @@ export function AppShell() {
   const applyState = useConsole((s) => s.applyState);
   const openDialog = useConsole((s) => s.openDialog);
   const clearCancelAlerts = useConsole((s) => s.clearCancelAlerts);
+  const [updateBusy, setUpdateBusy] = useState(false);
 
   const stop = () =>
     apiCall(() => api().stop_job(), (e) => {
       appendLog(`[ОШИБКА] ${e}`);
-      void openDialog({ title: "Ошибка", body: e, danger: true });
+      void openDialog({ title: "Ошибка", body: e, danger: true, alert: true });
     });
 
   const restart = async () => {
@@ -68,11 +71,75 @@ export function AppShell() {
     } catch {
       /* expected */
     }
-    window.setTimeout(() => setStatus("Сервер выключен — запусти start.sh снова", "error"), 600);
+    window.setTimeout(
+      () => setStatus("Сервер выключен — запусти start.sh снова", "error"),
+      600,
+    );
   };
 
-  const update = () =>
-    apiCall(() => api().apply_app_update(), (e) => appendLog(`[update] ${e}`));
+  const update = async () => {
+    if (updateBusy) return;
+    if (running) {
+      await openDialog({
+        title: "Обновление",
+        body: "Сначала останови текущую задачу (Стоп), потом обновляй.",
+        danger: true,
+        alert: true,
+      });
+      return;
+    }
+    const ok = await openDialog({
+      title: "Обновить код",
+      body:
+        "Скачать последнюю версию с GitHub?\nconfig.yaml и .venv не затираются.\nПосле обновления нажми ↻ перезапуск.",
+    });
+    if (!ok) return;
+
+    setUpdateBusy(true);
+    setStatus("Обновляю код…", "running");
+    appendLog("\n[UPDATE] Скачиваю обновление…\n");
+    try {
+      const r = await api().apply_app_update();
+      if (r && typeof r.error === "string" && r.error) {
+        appendLog(`[UPDATE] ${r.error}\n`);
+        setStatus("Ошибка обновления", "error");
+        await openDialog({
+          title: "Обновление не удалось",
+          body: String(r.error),
+          danger: true,
+          alert: true,
+        });
+        return;
+      }
+      const msg = String(
+        r.message || "Обновление готово. Перезапусти сервер (↻).",
+      );
+      appendLog(`[UPDATE] ${msg}\n`);
+      setStatus("Обновление готово — нажми ↻", "success");
+      try {
+        applyState(await api().get_state());
+      } catch {
+        /* ignore */
+      }
+      await openDialog({
+        title: "Успешно",
+        body: msg,
+        alert: true,
+      });
+    } catch (e) {
+      const msg = String(e);
+      appendLog(`[UPDATE] ${msg}\n`);
+      setStatus("Ошибка обновления", "error");
+      await openDialog({
+        title: "Обновление не удалось",
+        body: msg,
+        danger: true,
+        alert: true,
+      });
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
 
   const nav = [
     { id: "run" as const, label: "Запуск", Icon: LayoutDashboard },
@@ -127,17 +194,28 @@ export function AppShell() {
 
           <button
             type="button"
-            title="Обновить код"
+            title={updateBusy ? "Обновляю…" : "Обновить код"}
+            disabled={updateBusy}
             onClick={() => void update()}
-            className="flex size-10 cursor-pointer items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
+            className={cn(
+              "flex size-10 cursor-pointer items-center justify-center rounded-xl transition-colors",
+              updateBusy
+                ? "bg-slate-900 text-white"
+                : "text-slate-500 hover:bg-slate-100 hover:text-slate-900",
+            )}
           >
-            <Download className="size-5" />
+            {updateBusy ? (
+              <Loader2 className="size-5 animate-spin" />
+            ) : (
+              <Download className="size-5" />
+            )}
           </button>
           <button
             type="button"
             title="Перезапустить"
+            disabled={updateBusy}
             onClick={() => void restart()}
-            className="flex size-10 cursor-pointer items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
+            className="flex size-10 cursor-pointer items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40"
           >
             <RotateCcw className="size-5" />
           </button>

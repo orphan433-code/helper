@@ -5,6 +5,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
+# Finder / .command часто без Homebrew в PATH — adb тогда «не находится»
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin}"
+
 URL="http://127.0.0.1:8765"
 
 xattr -cr "$ROOT" 2>/dev/null || true

@@ -122,6 +122,26 @@
   }
 }
 
+@keyframes pbar-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+.pbar-indeterminate {
+  position: relative;
+  overflow: hidden;
+}
+.pbar-indeterminate > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 35%;
+  animation: pbar-slide 1.2s ease-in-out infinite;
+}
+
 .btn-shimmer {
   position: relative;
   isolation: isolate;

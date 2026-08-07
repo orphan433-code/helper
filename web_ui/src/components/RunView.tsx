@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Loader2 } from "lucide-react";
 import { ProgressPanelView } from "@/components/ProgressPanelView";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -26,48 +27,73 @@ export function RunView() {
   const openDialog = useConsole((st) => st.openDialog);
   const clearCancelAlerts = useConsole((st) => st.clearCancelAlerts);
   const applyState = useConsole((st) => st.applyState);
+  const applyReceiptPreview = useConsole((st) => st.applyReceiptPreview);
+
+  const [previewReady, setPreviewReady] = useState(0);
+  const [previewAwait, setPreviewAwait] = useState(0);
+  const [adbBusy, setAdbBusy] = useState(false);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const pollBusy = useRef(false);
+  const saveTimer = useRef<number | null>(null);
 
   const err = (e: string) => {
     appendLog(`[ОШИБКА] ${e}`);
-    void openDialog({ title: "Ошибка", body: e, danger: true });
+    void openDialog({ title: "Ошибка", body: e, danger: true, alert: true });
   };
 
-  const checkAdb = () =>
-    apiCall(async () => {
-      const r = await api().check_adb();
-      applyState({
-        adb_device: r.adb_device || "не подключён",
-        adb_ok: !!r.adb_ok,
-      });
-      return r;
-    }, err);
+  const checkAdb = async () => {
+    if (adbBusy) return;
+    setAdbBusy(true);
+    try {
+      await apiCall(async () => {
+        const r = await api().check_adb();
+        applyState({
+          adb_device: r.adb_device || "не подключён",
+          adb_ok: !!r.adb_ok,
+        });
+        return r;
+      }, err);
+    } finally {
+      setAdbBusy(false);
+    }
+  };
 
-  const save = () =>
-    apiCall(
+  const save = async () => {
+    if (saveState === "saving") return;
+    setSaveState("saving");
+    const r = await apiCall(
       () =>
         api().save_settings(
-          s.maxDeals,
+          Math.max(1, s.maxDeals || 1),
           s.minAmount.trim(),
           s.maxAmount.trim(),
           s.allowVisa,
           s.allowMastercard,
-          s.emptyPasses,
+          Math.max(1, s.emptyPasses || 1),
           s.fromPending,
         ),
       err,
     );
+    if (r && !r.error) {
+      setSaveState("saved");
+      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+      saveTimer.current = window.setTimeout(() => setSaveState("idle"), 2200);
+    } else {
+      setSaveState("idle");
+    }
+  };
 
   const login = () => apiCall(() => api().start_login(), err);
   const start = () =>
     apiCall(
       () =>
         api().start_pipeline(
-          s.maxDeals,
+          Math.max(1, s.maxDeals || 1),
           s.minAmount.trim(),
           s.maxAmount.trim(),
           s.allowVisa,
           s.allowMastercard,
-          s.emptyPasses,
+          Math.max(1, s.emptyPasses || 1),
           s.fromPending,
         ),
       err,
@@ -79,6 +105,56 @@ export function RunView() {
   const loginWaiting = waiting && confirmMode === "login";
   const receiptsWaiting = waiting && confirmMode === "pipeline";
   const startActive = running && jobMode === "pipeline" && !receiptsWaiting;
+  const receiptsPhase = receipts.phase || "";
+  const showReceiptPanel = receiptsWaiting || receipts.visible;
+  // После старта чеков список переводов прячем (как legacy)
+  const showPipelinePanel =
+    pipeline.visible && !receipts.visible && !receiptsWaiting;
+
+  useEffect(() => {
+    return () => {
+      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (
+      !receiptsWaiting ||
+      receiptsPhase === "processing" ||
+      receiptsPhase === "done"
+    ) {
+      setPreviewReady(0);
+      setPreviewAwait(0);
+      return;
+    }
+    let alive = true;
+    const tick = async () => {
+      if (!alive || pollBusy.current) return;
+      pollBusy.current = true;
+      try {
+        const prev = await api().preview_receipts();
+        if (!alive || !prev || prev.ok === false) return;
+        applyReceiptPreview(prev);
+        setPreviewReady(Number(prev.ready_count || 0));
+        setPreviewAwait(Number(prev.awaiting_count || 0));
+      } catch {
+        /* bridge ещё не готов / фаза сменилась */
+      } finally {
+        pollBusy.current = false;
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 2500);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [receiptsWaiting, receiptsPhase, applyReceiptPreview]);
+
+  const loadLabel =
+    receiptsWaiting && previewAwait > 0 && previewReady > 0
+      ? `Загрузить (${previewReady}/${previewAwait})`
+      : "Загрузить";
 
   return (
     <div className="space-y-3">
@@ -86,29 +162,44 @@ export function RunView() {
         <BentoCard
           className="col-span-3 lg:col-span-2 lg:row-start-1"
           name="Телефон"
-          description="Проверьте USB-отладку перед запуском."
-          tone={adbOk ? "ok" : "warn"}
-          badge={<StepBadge n={1} tone={adbOk ? "ok" : "warn"} />}
+          description="Проверьте USB/Wi‑Fi отладку перед запуском."
+          tone={adbBusy ? "active" : adbOk ? "ok" : "warn"}
+          badge={<StepBadge n={1} tone={adbOk ? "ok" : "warn"} active={adbBusy} />}
           cta={
             <RippleButton
+              disabled={adbBusy}
               onClick={() => void checkAdb()}
               rippleColor="#cbd5e1"
-              className="border-border bg-secondary text-secondary-foreground hover:bg-slate-200/80"
+              className={cn(
+                "min-w-[7.5rem] border-border bg-secondary text-secondary-foreground hover:bg-slate-200/80",
+                adbBusy && "opacity-90",
+              )}
             >
-              Проверить
+              {adbBusy ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" />
+                  Проверка…
+                </>
+              ) : (
+                "Проверить"
+              )}
             </RippleButton>
           }
         >
           <div
             className={cn(
-              "rounded-xl border px-3 py-2.5",
-              adbOk ? "border-emerald-200 bg-emerald-50/80" : "border-amber-200 bg-amber-50/90",
+              "rounded-xl border px-3 py-2.5 transition-colors",
+              adbBusy && "border-slate-300 bg-slate-50 animate-pulse",
+              !adbBusy && adbOk && "border-emerald-200 bg-emerald-50/80",
+              !adbBusy && !adbOk && "border-amber-200 bg-amber-50/90",
             )}
           >
             <div className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
               Устройство
             </div>
-            <div className="mt-0.5 font-mono text-sm font-medium">{adbText}</div>
+            <div className="mt-0.5 font-mono text-sm font-medium">
+              {adbBusy ? "Идёт проверка ADB…" : adbText}
+            </div>
           </div>
         </BentoCard>
 
@@ -121,20 +212,28 @@ export function RunView() {
             <div className="grid grid-cols-2 gap-3">
               <Field label="Макс. сделок">
                 <Input
-                  type="number"
+                  inputMode="numeric"
                   min={1}
                   max={50}
-                  value={s.maxDeals}
-                  onChange={(e) => patch({ maxDeals: Number(e.target.value) || 1 })}
+                  value={s.maxDeals ? String(s.maxDeals) : ""}
+                  onChange={(e) => {
+                    const raw = e.target.value.replace(/[^\d]/g, "");
+                    patch({ maxDeals: raw === "" ? 0 : Math.max(0, parseInt(raw, 10) || 0) });
+                  }}
                 />
               </Field>
               <Field label="Пустых проходов">
                 <Input
-                  type="number"
+                  inputMode="numeric"
                   min={1}
                   max={20}
-                  value={s.emptyPasses}
-                  onChange={(e) => patch({ emptyPasses: Number(e.target.value) || 1 })}
+                  value={s.emptyPasses ? String(s.emptyPasses) : ""}
+                  onChange={(e) => {
+                    const raw = e.target.value.replace(/[^\d]/g, "");
+                    patch({
+                      emptyPasses: raw === "" ? 0 : Math.max(0, parseInt(raw, 10) || 0),
+                    });
+                  }}
                 />
               </Field>
             </div>
@@ -177,10 +276,25 @@ export function RunView() {
 
             <div className="mt-auto space-y-3 pt-1">
               <RippleButton
+                disabled={saveState === "saving"}
                 onClick={() => void save()}
-                className="w-full border-primary bg-primary text-primary-foreground hover:brightness-105"
+                className={cn(
+                  "w-full transition-colors",
+                  saveState === "saved"
+                    ? "border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-600"
+                    : "border-primary bg-primary text-primary-foreground hover:brightness-105",
+                )}
               >
-                Сохранить
+                {saveState === "saving" ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" />
+                    Сохраняю…
+                  </>
+                ) : saveState === "saved" ? (
+                  "Сохранено"
+                ) : (
+                  "Сохранить"
+                )}
               </RippleButton>
 
               {cancels.length > 0 && (
@@ -207,10 +321,30 @@ export function RunView() {
                           <span>{c.amount || "Отмена"}</span>
                           <span className="font-mono text-muted-foreground">{c.ts}</span>
                         </div>
-                        {c.card && <div className="mt-1 text-muted-foreground">Карта {c.card}</div>}
+                        {c.card && (
+                          <div className="mt-1 text-muted-foreground">Карта {c.card}</div>
+                        )}
                         <div className="mt-1 font-medium">
                           {c.match_holder || c.match_label || "Сделка не найдена"}
                         </div>
+                        {(c.match_index != null || c.match_card || c.match_amount_tjs != null) && (
+                          <div className="mt-1 font-mono text-[10px] text-muted-foreground">
+                            {[
+                              c.match_index != null ? `#${c.match_index}` : null,
+                              c.match_card,
+                              c.match_amount_tjs != null
+                                ? `${c.match_amount_tjs} TJS`
+                                : null,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </div>
+                        )}
+                        {c.balance && (
+                          <div className="mt-0.5 text-[10px] text-muted-foreground">
+                            Баланс {c.balance}
+                          </div>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -254,8 +388,17 @@ export function RunView() {
           className="col-span-3 lg:col-span-2 lg:row-start-3"
           name="Обработка и переводы"
           description="Приём сделок и переводы через телефон."
-          tone={startActive || (!running && !loginWaiting) ? "active" : "default"}
-          badge={<StepBadge n={3} active={startActive || (!running && !loginWaiting)} />}
+          tone={
+            startActive || (!running && !loginWaiting && !receiptsWaiting)
+              ? "active"
+              : "default"
+          }
+          badge={
+            <StepBadge
+              n={3}
+              active={startActive || (!running && !loginWaiting && !receiptsWaiting)}
+            />
+          }
           cta={
             <RippleButton
               disabled={running}
@@ -266,25 +409,27 @@ export function RunView() {
             </RippleButton>
           }
         >
-          <ProgressPanelView panel={pipeline} />
+          {showPipelinePanel && <ProgressPanelView panel={pipeline} mode="pipeline" />}
         </BentoCard>
 
         <BentoCard
           className="col-span-3 lg:col-span-2 lg:row-start-4"
           name="Чеки"
-          description="После переводов загрузите чеки из папки загрузок."
-          tone={receiptsWaiting ? "active" : "default"}
-          muted={!receiptsWaiting && !receipts.visible}
-          badge={<StepBadge n={4} active={receiptsWaiting} />}
+          description="Чеки и видео подтягиваются с галереи телефона; затем нажмите «Загрузить»."
+          tone={receiptsWaiting || receiptsPhase === "processing" ? "active" : "default"}
+          muted={!showReceiptPanel}
+          badge={
+            <StepBadge n={4} active={receiptsWaiting || receiptsPhase === "processing"} />
+          }
           cta={
             <div className="flex flex-wrap gap-2">
               <RippleButton
-                disabled={!receiptsWaiting}
+                disabled={!receiptsWaiting || receiptsPhase === "processing"}
                 onClick={() => void confirmReceipts()}
                 rippleColor="#fde68a"
                 className="border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100"
               >
-                Загрузить
+                {loadLabel}
               </RippleButton>
               <RippleButton
                 onClick={() => void openFolder()}
@@ -297,7 +442,7 @@ export function RunView() {
           }
         >
           <p className="font-mono text-xs text-muted-foreground">{mediaDir}</p>
-          <ProgressPanelView panel={receipts} />
+          {showReceiptPanel && <ProgressPanelView panel={receipts} mode="receipts" />}
         </BentoCard>
       </BentoGrid>
     </div>

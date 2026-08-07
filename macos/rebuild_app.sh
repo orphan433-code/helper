@@ -39,6 +39,8 @@ if [[ ! -x "$PY" ]]; then
   exit 1
 fi
 cd "$ROOT"
+# GUI app PATH без Homebrew — иначе adb «не видит» телефон
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin}"
 exec /usr/bin/arch -arm64 "$PY" "$ROOT/launcher_main.py"
 EOF
 

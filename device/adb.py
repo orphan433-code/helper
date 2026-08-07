@@ -1,10 +1,11 @@
-"""ADB: скриншоты и низкоуровневые команды (USB)."""
+"""ADB: скриншоты и низкоуровневые команды (USB / Wi‑Fi)."""
 
 from __future__ import annotations
 
 import base64
 import io
 import os
+import shutil
 import subprocess
 import sys
 from typing import TYPE_CHECKING
@@ -15,6 +16,14 @@ if TYPE_CHECKING:
 _cached_size: tuple[int, int] | None = None
 _cached_serial: str | None = None
 _cached_serial_set = False
+_adb_bin_cached: str | None = None
+
+_ADB_CANDIDATES = (
+    "/opt/homebrew/bin/adb",
+    "/usr/local/bin/adb",
+    os.path.expanduser("~/Library/Android/sdk/platform-tools/adb"),
+    "/Users/Shared/Android/sdk/platform-tools/adb",
+)
 
 
 def _bank_cfg() -> dict:
@@ -23,11 +32,62 @@ def _bank_cfg() -> dict:
     return bank_settings()
 
 
+def adb_bin() -> str:
+    """Абсолютный путь к adb: GUI/Finder часто без /opt/homebrew в PATH."""
+    global _adb_bin_cached
+    if _adb_bin_cached:
+        return _adb_bin_cached
+    found = shutil.which("adb")
+    if found:
+        _adb_bin_cached = found
+        return found
+    for candidate in _ADB_CANDIDATES:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            _adb_bin_cached = candidate
+            return candidate
+    _adb_bin_cached = "adb"
+    return _adb_bin_cached
+
+
 def invalidate_serial_cache() -> None:
     """Сбросить кэш serial (например, при потере устройства)."""
     global _cached_serial, _cached_serial_set
     _cached_serial = None
     _cached_serial_set = False
+
+
+def _is_network_serial(serial: str) -> bool:
+    """Wi‑Fi / tcpip / wireless debugging (не USB transport)."""
+    s = serial.strip()
+    if not s:
+        return False
+    if "_adb-tls" in s or s.endswith("._tcp") or "._tcp." in s:
+        return True
+    # classic `adb connect 192.168.x.x:5555`
+    if ":" in s:
+        return True
+    return False
+
+
+def _list_ready_serials() -> list[str]:
+    """Serial'ы со статусом `device` (готовы к командам)."""
+    proc = subprocess.run(
+        [adb_bin(), "devices"],
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return []
+    lines = (proc.stdout or b"").decode(errors="replace").strip().splitlines()
+    out: list[str] = []
+    for line in lines[1:]:
+        line = line.strip()
+        if not line or line.startswith("*"):
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            out.append(parts[0])
+    return out
 
 
 def pick_serial(explicit: str | None = None) -> str | None:
@@ -41,35 +101,42 @@ def pick_serial(explicit: str | None = None) -> str | None:
     if cfg:
         return str(cfg).strip() or None
 
-    # `adb devices` — отдельный subprocess; при частом OCR-поллинге
-    # (каждые 0.2-0.5с) кэшируем результат на процесс, чтобы не спавнить
-    # его на каждый screencap/tap.
-    if _cached_serial_set:
+    # Кэш только успешного serial. None не кэшируем — иначе «через раз»
+    # после краткого offline / смены USB↔Wi‑Fi.
+    if _cached_serial_set and _cached_serial:
         return _cached_serial
 
-    proc = subprocess.run(["adb", "devices"], capture_output=True, check=True)
-    lines = proc.stdout.decode().strip().splitlines()[1:]
-    usb = [
-        line.split()[0]
-        for line in lines
-        if line.strip() and "\tdevice" in line and "_adb-tls" not in line
-    ]
+    devices = _list_ready_serials()
+    if not devices:
+        return None
+
+    usb = [s for s in devices if not _is_network_serial(s)]
+    net = [s for s in devices if _is_network_serial(s)]
+
     result: str | None = None
     if len(usb) == 1:
         result = usb[0]
+    elif len(usb) > 1:
+        print(
+            "[WARN] Несколько USB-устройств — укажи bank.adb_serial",
+            file=sys.stderr,
+        )
+        result = usb[0]
+    elif len(net) == 1:
+        result = net[0]
+    elif len(net) > 1:
+        print(
+            "[WARN] Несколько Wi‑Fi adb — укажи bank.adb_serial "
+            "(IP:port или wireless serial)",
+            file=sys.stderr,
+        )
+        result = net[0]
     else:
-        all_dev = [
-            line.split()[0] for line in lines if line.strip() and "\tdevice" in line
-        ]
-        if len(all_dev) == 1:
-            result = all_dev[0]
-        elif len(usb) > 1:
-            print(
-                "[WARN] Несколько USB-устройств — укажи bank.adb_serial",
-                file=sys.stderr,
-            )
-    _cached_serial = result
-    _cached_serial_set = True
+        result = devices[0]
+
+    if result:
+        _cached_serial = result
+        _cached_serial_set = True
     return result
 
 
@@ -85,7 +152,7 @@ def run_adb(
       None — без -s (например adb devices)
       str — конкретное устройство
     """
-    cmd = ["adb"]
+    cmd = [adb_bin()]
     if serial is ...:
         resolved = pick_serial()
     else:
@@ -97,14 +164,24 @@ def run_adb(
 
 
 def require_device() -> str | None:
-    serial = pick_serial()
-    proc = run_adb(["get-state"], serial=serial, check=False)
-    if proc.returncode != 0:
+    """Найти готовое устройство; при сбое сбросить кэш и повторить один раз."""
+    last_err = ""
+    for _ in range(2):
+        serial = pick_serial()
+        proc = run_adb(["get-state"], serial=serial, check=False)
+        if proc.returncode == 0:
+            state = (proc.stdout or b"").decode(errors="replace").strip()
+            if state == "device":
+                return serial
+            last_err = state or "unknown"
+        else:
+            err = (proc.stderr or b"").decode(errors="replace").strip()
+            last_err = err or f"exit {proc.returncode}"
         invalidate_serial_cache()
-        raise RuntimeError(
-            "adb не видит телефон. USB, «Отладка по USB», adb devices"
-        )
-    return serial
+    hint = f" ({last_err})" if last_err else ""
+    raise RuntimeError(
+        "adb не видит телефон. USB / Wi‑Fi debugging, `adb devices`" + hint
+    )
 
 
 def _parse_wm_size(stdout: str) -> tuple[int, int] | None:
@@ -143,7 +220,7 @@ def screencap_image(*, refresh_size: bool = True) -> Image.Image:
     from PIL import Image
 
     require_device()
-    cmd = ["adb"]
+    cmd = [adb_bin()]
     serial = pick_serial()
     if serial:
         cmd.extend(["-s", serial])
