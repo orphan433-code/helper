@@ -52,7 +52,7 @@ type Settings = {
   allowVisa: boolean;
   allowMastercard: boolean;
   fromPending: boolean;
-  redirMax: number;
+  redirMax: string;
   redirMin: string;
   redirMaxAmt: string;
   redirSkipBog: boolean;
@@ -142,7 +142,7 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     allowVisa: true,
     allowMastercard: false,
     fromPending: false,
-    redirMax: 5,
+    redirMax: "5",
     redirMin: "",
     redirMaxAmt: "",
     redirSkipBog: false,
@@ -328,17 +328,48 @@ export const useConsole = create<ConsoleState>((set, get) => ({
   clearReceiptProgress: () => set({ receipts: emptyProgress("Чеки") }),
 
   updateDeclineResult: (payload) => {
+    const isRedirect = String(payload.action || "cancel") === "redirect";
+    const doneCount = Number(
+      isRedirect ? payload.redirected || 0 : payload.cancelled || 0,
+    );
+    const failed = Number(payload.failed || 0);
+    const total = Number(payload.total || (payload.deals as unknown[])?.length || 0);
+    const message =
+      String(payload.message || "") ||
+      (isRedirect
+        ? `Передано ${doneCount} из ${total}`
+        : `Отменено ${doneCount} из ${total}`);
+    const hasErrors = failed > 0 || (doneCount === 0 && total > 0);
+
     set({
       decline: {
         visible: true,
         processing: false,
         done: true,
-        title: String(payload.title || "Результат"),
-        summary: String(payload.summary || ""),
-        message: String(payload.message || ""),
+        title: String(
+          payload.title ||
+            (hasErrors
+              ? isRedirect
+                ? "Передано с ошибками"
+                : "Снято с ошибками"
+              : isRedirect
+                ? "Сделки переданы"
+                : "Сделки сняты"),
+        ),
+        summary:
+          total === 0 ? "0" : `${doneCount} из ${total}${failed ? `, ошибок ${failed}` : ""}`,
+        message,
         deals: asDeals(payload.deals),
         success: payload.success_text ? String(payload.success_text) : undefined,
+        hasErrors,
       },
+    });
+
+    void get().openDialog({
+      title: hasErrors ? "Не успешно" : "Успешно",
+      body: message,
+      danger: hasErrors,
+      alert: true,
     });
   },
 
@@ -427,6 +458,7 @@ export const useConsole = create<ConsoleState>((set, get) => ({
           title: opts.title || "Подтверждение",
           body: opts.body || "",
           danger: opts.danger,
+          alert: opts.alert,
           resolve,
         },
       });
@@ -435,6 +467,6 @@ export const useConsole = create<ConsoleState>((set, get) => ({
   closeDialog: (ok) => {
     const d = get().dialog;
     d.resolve?.(ok);
-    set({ dialog: { open: false, title: "", body: "" } });
+    set({ dialog: { open: false, title: "", body: "", alert: false } });
   },
 }));

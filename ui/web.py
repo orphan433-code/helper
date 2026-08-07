@@ -102,7 +102,7 @@ class TzkApi:
 
     def __init__(self) -> None:
         self._window: Any = None
-        self._log_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._log_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=2000)
         set_ui_sink(self._push_log_event)
         self._worker: threading.Thread | None = None
         self._worker_loop: asyncio.AbstractEventLoop | None = None
@@ -122,7 +122,18 @@ class TzkApi:
     def _push_log_event(self, event: dict[str, Any]) -> None:
         if not event:
             return
-        self._log_queue.put(event)
+        try:
+            self._log_queue.put_nowait(event)
+        except queue.Full:
+            # UI не читает быстрее, чем пишем — роняем старое, не растим RAM.
+            try:
+                self._log_queue.get_nowait()
+            except Exception:
+                pass
+            try:
+                self._log_queue.put_nowait(event)
+            except Exception:
+                pass
 
     def _push_log(
         self,
@@ -436,7 +447,7 @@ class TzkApi:
 
     def start_redirect(
         self,
-        trader_ids: list[str] | None = None,
+        trader_ids: list[str] | str | None = None,
         max_per_run: int | float | str | None = None,
         min_amount: int | float | str | None = None,
         max_amount: int | float | str | None = None,
@@ -450,7 +461,14 @@ class TzkApi:
         По умолчанию все подряд. skip_bog=True — не редиректить BOG/548888….
         visa_only=True — только карты Visa (4…).
         """
-        ids = [str(x).strip() for x in (trader_ids or []) if str(x).strip()]
+        # list[str] или comma-string (старый React join) — не итерировать str по символам
+        if isinstance(trader_ids, str):
+            raw_ids: list[Any] = trader_ids.split(",")
+        elif isinstance(trader_ids, (list, tuple)):
+            raw_ids = list(trader_ids)
+        else:
+            raw_ids = []
+        ids = [str(x).strip() for x in raw_ids if str(x).strip()]
         if not ids:
             return self._err("Выбери хотя бы один аккаунт (104.1 / 104.2 / 104.3)")
         status = str(deal_status or "new").strip().lower() or "new"

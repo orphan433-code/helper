@@ -19,22 +19,64 @@ export function DealsView() {
 
   const err = (e: string) => {
     appendLog(`[ОШИБКА] ${e}`);
-    void openDialog({ title: "Ошибка", body: e, danger: true });
+    void openDialog({ title: "Ошибка", body: e, danger: true, alert: true });
   };
 
-  const selectedTraders = TRADERS.filter((t) => s.redirAccounts[t.id])
-    .map((t) => t.traderId)
-    .join(",");
+  const selectedLabels = TRADERS.filter((t) => s.redirAccounts[t.id]).map(
+    (t) => t.label,
+  );
+  const selectedTraders = TRADERS.filter((t) => s.redirAccounts[t.id]).map(
+    (t) => t.traderId,
+  );
 
   const saveFilters = () =>
     apiCall(() => api().save_redirect_filters(s.redirSkipBog, s.redirVisaOnly), err);
 
-  const redirect = (status: string) =>
-    apiCall(async () => {
+  const redirect = async (status: string) => {
+    if (!selectedTraders.length) {
+      await openDialog({
+        title: "Передача сделок",
+        body: "Выберите хотя бы один аккаунт: 104.1, 104.2 или 104.3",
+        alert: true,
+      });
+      return;
+    }
+    const maxN = parseInt(String(s.redirMax).trim(), 10);
+    if (!Number.isFinite(maxN) || maxN < 1) {
+      await openDialog({
+        title: "Передача сделок",
+        body: "Укажите, сколько сделок передать (минимум 1)",
+        alert: true,
+      });
+      return;
+    }
+
+    const statusLabel = status === "pending" ? "ожидающих" : "новых";
+    const where =
+      selectedLabels.length > 1
+        ? selectedLabels.join(" и ")
+        : selectedLabels[0] || "аккаунт";
+    const amtBits = [
+      s.redirMin.trim() ? `от ${s.redirMin.trim()}` : null,
+      s.redirMaxAmt.trim() ? `до ${s.redirMaxAmt.trim()}` : null,
+    ].filter(Boolean);
+    const amtHint = amtBits.length ? amtBits.join(" ") : "любая сумма";
+
+    const ok = await openDialog({
+      title: status === "pending" ? "Передача ожидающих" : "Передача новых",
+      body:
+        `Передать до ${maxN} ${statusLabel} сделок (${amtHint}) на ${where}?\n\n` +
+        "Действие нельзя откатить.",
+      danger: true,
+    });
+    if (!ok) return;
+
+    clearDeclineResult();
+    await apiCall(async () => {
       await saveFilters();
       return api().start_redirect(
         selectedTraders,
-        s.redirMax,
+        maxN,
         s.redirMin || null,
         s.redirMaxAmt || null,
         status,
@@ -42,6 +84,7 @@ export function DealsView() {
         s.redirVisaOnly,
       );
     }, err);
+  };
 
   const declineRun = async () => {
     const ok = await openDialog({
@@ -97,11 +140,16 @@ export function DealsView() {
               <div className="space-y-1.5">
                 <Label>Сколько</Label>
                 <Input
-                  type="number"
+                  inputMode="numeric"
                   min={1}
                   max={100}
                   value={s.redirMax}
-                  onChange={(e) => patch({ redirMax: Number(e.target.value) || 1 })}
+                  placeholder="1–100"
+                  onChange={(e) =>
+                    patch({
+                      redirMax: e.target.value.replace(/[^\d]/g, "").slice(0, 3),
+                    })
+                  }
                 />
               </div>
               <div className="space-y-1.5">

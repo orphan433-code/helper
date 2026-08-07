@@ -74,6 +74,8 @@ export type DialogState = {
   title: string;
   body: string;
   danger?: boolean;
+  /** Только кнопка OK, без «Назад» (итог операции). */
+  alert?: boolean;
   resolve?: (ok: boolean) => void;
 };
 

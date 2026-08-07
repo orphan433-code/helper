@@ -265,6 +265,11 @@ def _loop() -> None:
             if key in _seen_keys:
                 continue
             _seen_keys.add(key)
+            if len(_seen_keys) > 2000:
+                # Держим набор конечным на очень долгом приёме сделок.
+                _seen_keys.intersection_update(
+                    {r["key"] for r in records}
+                )
             parsed = parse_cancel_record(rec)
             if parsed is None:
                 continue

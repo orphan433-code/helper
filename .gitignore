@@ -49,3 +49,7 @@ web_ui/node_modules/
 
 # локальный runtime state
 runtime/
+
+# OTP secrets (Google Authenticator export)
+runtime/otp_accounts.json
+**/otp_accounts.json

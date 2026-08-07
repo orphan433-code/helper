@@ -13,6 +13,8 @@ if TYPE_CHECKING:
     from PIL import Image
 
 _cached_size: tuple[int, int] | None = None
+_cached_serial: str | None = None
+_cached_serial_set = False
 
 
 def _bank_cfg() -> dict:
@@ -21,7 +23,15 @@ def _bank_cfg() -> dict:
     return bank_settings()
 
 
+def invalidate_serial_cache() -> None:
+    """Сбросить кэш serial (например, при потере устройства)."""
+    global _cached_serial, _cached_serial_set
+    _cached_serial = None
+    _cached_serial_set = False
+
+
 def pick_serial(explicit: str | None = None) -> str | None:
+    global _cached_serial, _cached_serial_set
     if explicit:
         return explicit
     env = os.environ.get("ANDROID_SERIAL")
@@ -31,6 +41,12 @@ def pick_serial(explicit: str | None = None) -> str | None:
     if cfg:
         return str(cfg).strip() or None
 
+    # `adb devices` — отдельный subprocess; при частом OCR-поллинге
+    # (каждые 0.2-0.5с) кэшируем результат на процесс, чтобы не спавнить
+    # его на каждый screencap/tap.
+    if _cached_serial_set:
+        return _cached_serial
+
     proc = subprocess.run(["adb", "devices"], capture_output=True, check=True)
     lines = proc.stdout.decode().strip().splitlines()[1:]
     usb = [
@@ -38,14 +54,23 @@ def pick_serial(explicit: str | None = None) -> str | None:
         for line in lines
         if line.strip() and "\tdevice" in line and "_adb-tls" not in line
     ]
+    result: str | None = None
     if len(usb) == 1:
-        return usb[0]
-    all_dev = [line.split()[0] for line in lines if line.strip() and "\tdevice" in line]
-    if len(all_dev) == 1:
-        return all_dev[0]
-    if len(usb) > 1:
-        print("[WARN] Несколько USB-устройств — укажи bank.adb_serial", file=sys.stderr)
-    return None
+        result = usb[0]
+    else:
+        all_dev = [
+            line.split()[0] for line in lines if line.strip() and "\tdevice" in line
+        ]
+        if len(all_dev) == 1:
+            result = all_dev[0]
+        elif len(usb) > 1:
+            print(
+                "[WARN] Несколько USB-устройств — укажи bank.adb_serial",
+                file=sys.stderr,
+            )
+    _cached_serial = result
+    _cached_serial_set = True
+    return result
 
 
 def run_adb(
@@ -75,6 +100,7 @@ def require_device() -> str | None:
     serial = pick_serial()
     proc = run_adb(["get-state"], serial=serial, check=False)
     if proc.returncode != 0:
+        invalidate_serial_cache()
         raise RuntimeError(
             "adb не видит телефон. USB, «Отладка по USB», adb devices"
         )

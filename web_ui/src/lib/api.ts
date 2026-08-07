@@ -40,7 +40,7 @@ type Api = {
   open_screens_folder: () => Promise<Record<string, unknown>>;
   start_decline: (bank: string) => Promise<Record<string, unknown>>;
   start_redirect: (
-    trader_ids: string,
+    trader_ids: string[],
     max_per_run: number,
     min_amount: string | number | null,
     max_amount: string | number | null,
