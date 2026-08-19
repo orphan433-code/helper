@@ -40,16 +40,90 @@ class BrowserSession:
         BrowserSession.register(None)
 
 
+_VIEWPORT = {"width": 1400, "height": 900}
+_ZOOM_STYLE_JS = """
+(z) => {
+  if (!z || Math.abs(z - 1) < 1e-6) return;
+  const apply = () => {
+    const root = document.documentElement;
+    const id = '__tzk_zoom';
+    let el = document.getElementById(id);
+    if (!el) {
+      el = document.createElement('style');
+      el.id = id;
+      (document.head || root).appendChild(el);
+    }
+    const layoutH = Math.round(window.innerHeight / z);
+    el.textContent = [
+      'html { zoom: ' + z + ' !important; }',
+      'html, body { overflow: hidden !important; }',
+      ':root { --window-inner-height: ' + layoutH + 'px !important; }',
+    ].join('\\n');
+    root.style.setProperty('zoom', String(z), 'important');
+    root.style.setProperty('--window-inner-height', layoutH + 'px', 'important');
+  };
+  apply();
+  document.addEventListener('DOMContentLoaded', apply);
+  if (!window.__tzk_zoom_hook) {
+    window.__tzk_zoom_hook = true;
+    new MutationObserver(apply).observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['style', 'class'],
+    });
+    window.addEventListener('resize', apply);
+    window.setInterval(apply, 800);
+  }
+}
+"""
+
+
+def _zoom_init_script(zoom: float) -> str:
+    return f"() => {{ ({_ZOOM_STYLE_JS})({zoom!r}); }}"
+
+
 async def _apply_page_zoom(page: Page, zoom: float) -> None:
-    if zoom == 1.0:
+    """CSS zoom + компенсация --window-inner-height, чтобы таблица
+    заполняла окно. Без CDP (он раздувает innerHeight и ломает скролл).
+    """
+    if zoom <= 0 or abs(zoom - 1.0) < 1e-6:
         return
     try:
-        await page.evaluate(
-            "(z) => { document.documentElement.style.zoom = String(z); }",
-            zoom,
-        )
+        if page.is_closed():
+            return
+    except Exception:
+        return
+    try:
+        await page.evaluate(_ZOOM_STYLE_JS, zoom)
     except Exception:
         pass
+
+
+def _install_zoom_hooks(context: BrowserContext, zoom: float):
+    if abs(zoom - 1.0) < 1e-6:
+        return None
+
+    async def _hook(page: Page) -> None:
+        await _apply_page_zoom(page, zoom)
+
+        def _reapply(*_args: object) -> None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            loop.create_task(_apply_page_zoom(page, zoom))
+
+        page.on("load", _reapply)
+        page.on("domcontentloaded", _reapply)
+
+    def _on_page(page: Page) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(_hook(page))
+
+    context.on("page", _on_page)
+    return _hook
 
 
 async def launch_browser(
@@ -76,17 +150,17 @@ async def launch_browser(
     context = await playwright.chromium.launch_persistent_context(
         user_data_dir=str(profile),
         headless=headless_flag,
-        viewport={"width": 1400, "height": 900},
+        viewport={"width": _VIEWPORT["width"], "height": _VIEWPORT["height"]},
         locale="ru-RU",
         args=["--disable-blink-features=AutomationControlled"],
     )
-    if zoom != 1.0:
-        await context.add_init_script(
-            f"() => {{ document.documentElement.style.zoom = {zoom!r}; }}"
-        )
-        for page in context.pages:
-            await _apply_page_zoom(page, zoom)
-        debug(f"Масштаб вкладок: {zoom:g} ({zoom * 100:.0f}%)")
+    if abs(zoom - 1.0) >= 1e-6:
+        await context.add_init_script(_zoom_init_script(zoom))
+        hook = _install_zoom_hooks(context, zoom)
+        if hook is not None:
+            for page in context.pages:
+                await hook(page)
+        info(f"Масштаб страницы: {zoom * 100:.0f}%")
     session = BrowserSession(
         playwright=playwright, context=context, profile=profile
     )

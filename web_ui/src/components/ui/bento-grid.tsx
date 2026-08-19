@@ -5,7 +5,6 @@ interface BentoGridProps extends ComponentPropsWithoutRef<"div"> {
   children: ReactNode;
 }
 
-/** Magic UI BentoGrid — 3-col, auto-rows */
 export function BentoGrid({ children, className, ...props }: BentoGridProps) {
   return (
     <div
@@ -28,9 +27,6 @@ interface BentoCardProps extends ComponentPropsWithoutRef<"div"> {
   tone?: "default" | "ok" | "warn" | "active";
 }
 
-/**
- * Magic UI BentoCard chrome — operator-friendly (children instead of marketing CTA).
- */
 export function BentoCard({
   name,
   description,

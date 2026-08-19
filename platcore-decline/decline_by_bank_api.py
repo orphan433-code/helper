@@ -80,7 +80,7 @@ _BANK_PRESETS: dict[str, dict[str, Any]] = {
     "tbc": {
         "label": "TBC",
         "patterns": ["tbc"],
-        "card_prefixes": [],
+        "card_prefixes": ["4315"],
     },
     "bog": {
         "label": "Bank of Georgia",
@@ -863,7 +863,7 @@ def main() -> None:
         "--bank",
         choices=("tbc", "bog"),
         default="tbc",
-        help="для отмены: tbc или bog (Bank of Georgia / карты 548888…)",
+        help="для отмены: tbc (имя TBC / карты 4315…) или bog (Bank of Georgia / 548888…)",
     )
     parser.add_argument(
         "--deal-status",

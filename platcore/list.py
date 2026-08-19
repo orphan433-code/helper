@@ -46,36 +46,56 @@ _DUPLICATE_DEAL_RE = re.compile(
 )
 
 _FIND_SCROLLER_JS = """
+() => document.querySelector('[data-virtuoso-scroller]')
+    || document.querySelector('[data-test-id="virtuoso-scroller"]')
+    || null;
+"""
+
+_LIST_METRICS_JS = """
 () => {
-    const scroller = document.querySelector('[data-virtuoso-scroller]');
-    if (scroller) return scroller;
-    const list = document.querySelector('tbody[data-test-id="virtuoso-item-list"]');
-    if (!list) return null;
-    let el = list.parentElement;
-    while (el) {
-        const style = window.getComputedStyle(el);
-        const oy = style.overflowY;
-        if (
-            (oy === 'auto' || oy === 'scroll' || oy === 'overlay')
-            && el.scrollHeight > el.clientHeight + 5
-        ) {
-            return el;
-        }
-        el = el.parentElement;
-    }
-    return null;
+    const scroller = document.querySelector('[data-virtuoso-scroller]')
+        || document.querySelector('[data-test-id="virtuoso-scroller"]');
+    const rows = document.querySelectorAll(
+        'tbody[data-test-id="virtuoso-item-list"] tr'
+    );
+    const last = rows.length ? rows[rows.length - 1] : null;
+    const idxRaw = last && (
+        last.getAttribute('data-item-index') || last.getAttribute('data-index')
+    );
+    const lastIndex = idxRaw != null && idxRaw !== ''
+        ? Number(idxRaw)
+        : (rows.length ? rows.length - 1 : -1);
+    const scrollTop = scroller ? scroller.scrollTop : 0;
+    const scrollHeight = scroller ? scroller.scrollHeight : 0;
+    const clientHeight = scroller ? scroller.clientHeight : 0;
+    return {
+        lastIndex: Number.isFinite(lastIndex) ? lastIndex : -1,
+        rowCount: rows.length,
+        scrollTop,
+        scrollHeight,
+        clientHeight,
+        atBottom: !scroller || scrollTop + clientHeight >= scrollHeight - 8,
+    };
 }
+"""
+
+_SCROLL_TO_TOP_JS = """
+(el) => { if (el) el.scrollTop = 0; }
 """
 
 _ROW_STEP_PX_JS = """
 (rows) => {
     const row = document.querySelector('tbody[data-test-id="virtuoso-item-list"] tr');
-    const h = row ? row.getBoundingClientRect().height : 56;
-    return Math.max(40, Math.round(h * rows));
+    const known = row && Number(row.getAttribute('data-known-size'));
+    const h = (known && known > 0)
+        ? known
+        : (row ? row.offsetHeight : 72);
+    return Math.max(48, Math.round(h * rows));
 }
 """
 
 _SCROLL_SETTLE_MS = 650
+_LAZY_LOAD_MS = 900
 
 
 def make_fingerprint(
@@ -247,46 +267,99 @@ async def _platcore_list_scroller(page: Page):
     return handle
 
 
+async def _list_metrics(page: Page) -> dict:
+    try:
+        data = await page.evaluate(_LIST_METRICS_JS)
+    except Exception:
+        return {
+            "lastIndex": -1,
+            "rowCount": 0,
+            "scrollTop": 0,
+            "scrollHeight": 0,
+            "clientHeight": 0,
+            "atBottom": True,
+        }
+    return data if isinstance(data, dict) else {}
+
+
+def _metrics_advanced(before: dict, after: dict) -> bool:
+    def idx(row: dict) -> int:
+        val = row.get("lastIndex")
+        return int(val) if val is not None else -1
+
+    return (
+        idx(after) > idx(before)
+        or float(after.get("scrollTop") or 0) > float(before.get("scrollTop") or 0) + 4
+        or float(after.get("scrollHeight") or 0)
+        > float(before.get("scrollHeight") or 0) + 8
+    )
+
+
 async def scroll_platcore_list_to_top(page: Page) -> None:
     handle = await _platcore_list_scroller(page)
-    if not handle:
-        return
-    await handle.evaluate("el => { if (el) el.scrollTop = 0; }")
-    await handle.dispose()
+    if handle:
+        try:
+            await handle.evaluate(_SCROLL_TO_TOP_JS)
+        except Exception:
+            pass
+        await handle.dispose()
     await page.wait_for_timeout(_SCROLL_SETTLE_MS)
 
 
-async def step_platcore_list_scroll(page: Page, *, rows: int = 2) -> bool:
+async def step_platcore_list_scroll(page: Page, *, rows: int = 4) -> bool:
+    """Крутить только [data-virtuoso-scroller], не window/страницу."""
     handle = await _platcore_list_scroller(page)
     if not handle:
         return False
-    at_bottom = await handle.evaluate(
-        "el => el && el.scrollTop + el.clientHeight >= el.scrollHeight - 2"
-    )
+
+    before = await _list_metrics(page)
+    at_bottom = bool(before.get("atBottom"))
     if at_bottom:
-        await handle.evaluate("el => { if (el) el.scrollTop = 0; }")
+        await page.wait_for_timeout(_LAZY_LOAD_MS)
+        after = await _list_metrics(page)
+        if _metrics_advanced(before, after):
+            await handle.dispose()
+            return True
+        try:
+            await handle.evaluate(_SCROLL_TO_TOP_JS)
+        except Exception:
+            pass
         await handle.dispose()
         await page.wait_for_timeout(_SCROLL_SETTLE_MS)
         return False
 
     step_px = await page.evaluate(_ROW_STEP_PX_JS, rows)
-    await handle.evaluate(
-        "(el, step) => { if (el) el.scrollTop += step; }",
-        step_px,
-    )
+    try:
+        await handle.evaluate(
+            "(el, step) => { if (el) el.scrollTop += step; }",
+            step_px,
+        )
+    except Exception:
+        await handle.dispose()
+        return False
     await handle.dispose()
     await page.wait_for_timeout(_SCROLL_SETTLE_MS)
+    after = await _list_metrics(page)
+    if _metrics_advanced(before, after):
+        return True
+    if after.get("atBottom"):
+        await page.wait_for_timeout(_LAZY_LOAD_MS)
+        later = await _list_metrics(page)
+        if _metrics_advanced(before, later):
+            return True
+        await scroll_platcore_list_to_top(page)
+        return False
     return True
 
 
 async def nudge_platcore_list_scroll(page: Page) -> bool:
-    """Прокрутить список вниз на ~2 строки.
+    """Прокрутить таблицу вниз на ~4 строки.
 
     Returns:
         True — ещё есть куда скроллить вниз.
         False — дошли до конца списка и вернулись наверх (полный круг).
     """
-    return await step_platcore_list_scroll(page, rows=2)
+    return await step_platcore_list_scroll(page, rows=4)
 
 
 async def _parse_amount_cell(amount_td: Locator) -> tuple[str, str]:

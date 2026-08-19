@@ -15,6 +15,8 @@ import { DealsView } from "@/components/DealsView";
 import { LogView } from "@/components/LogView";
 import { RecoveryDialog } from "@/components/RecoveryDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { BusyOverlay } from "@/components/BusyOverlay";
+import { ResultOverlay } from "@/components/ResultOverlay";
 import { LightRays } from "@/components/ui/light-rays";
 import { api, apiCall, serverPost } from "@/lib/api";
 import { useConsole } from "@/store/console";
@@ -59,9 +61,10 @@ export function AppShell() {
 
   const shutdown = async () => {
     const ok = await openDialog({
-      title: "Выключение",
-      body: "Выключить TJS полностью?\nСервер остановится, страница перестанет отвечать.",
+      title: "Выключить TJS",
+      body: "Сервер остановится",
       danger: true,
+      confirmLabel: "Выключить",
     });
     if (!ok) return;
     appendLog("\n[SERVER] Выключение…\n");
@@ -81,17 +84,16 @@ export function AppShell() {
     if (updateBusy) return;
     if (running) {
       await openDialog({
-        title: "Обновление",
-        body: "Сначала останови текущую задачу (Стоп), потом обновляй.",
-        danger: true,
+        title: "Сначала стоп",
+        body: "Останови задачу, потом обновляй",
         alert: true,
       });
       return;
     }
     const ok = await openDialog({
       title: "Обновить код",
-      body:
-        "Скачать последнюю версию с GitHub?\nconfig.yaml и .venv не затираются.\nПосле обновления нажми ↻ перезапуск.",
+      body: "С GitHub. Конфиг не затирается",
+      confirmLabel: "Обновить",
     });
     if (!ok) return;
 
@@ -104,7 +106,7 @@ export function AppShell() {
         appendLog(`[UPDATE] ${r.error}\n`);
         setStatus("Ошибка обновления", "error");
         await openDialog({
-          title: "Обновление не удалось",
+          title: "Не обновилось",
           body: String(r.error),
           danger: true,
           alert: true,
@@ -122,7 +124,7 @@ export function AppShell() {
         /* ignore */
       }
       await openDialog({
-        title: "Успешно",
+        title: "Готово",
         body: msg,
         alert: true,
       });
@@ -131,7 +133,7 @@ export function AppShell() {
       appendLog(`[UPDATE] ${msg}\n`);
       setStatus("Ошибка обновления", "error");
       await openDialog({
-        title: "Обновление не удалось",
+        title: "Не обновилось",
         body: msg,
         danger: true,
         alert: true,
@@ -168,6 +170,8 @@ export function AppShell() {
         {view === "log" && <LogView />}
       </div>
 
+      <BusyOverlay />
+      <ResultOverlay />
       <RecoveryDialog />
       <ConfirmDialog />
 

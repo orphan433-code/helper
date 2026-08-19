@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 import { ProgressPanelView } from "@/components/ProgressPanelView";
+import { BlurFade } from "@/components/ui/blur-fade";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -157,12 +158,13 @@ export function RunView() {
       : "Загрузить";
 
   return (
+    <BlurFade delay={0.05} inView>
     <div className="space-y-3">
       <BentoGrid className="lg:grid-rows-[auto_auto_auto_auto]">
         <BentoCard
           className="col-span-3 lg:col-span-2 lg:row-start-1"
           name="Телефон"
-          description="Проверьте USB/Wi‑Fi отладку перед запуском."
+          description="USB / Wi‑Fi отладка"
           tone={adbBusy ? "active" : adbOk ? "ok" : "warn"}
           badge={<StepBadge n={1} tone={adbOk ? "ok" : "warn"} active={adbBusy} />}
           cta={
@@ -204,11 +206,11 @@ export function RunView() {
         </BentoCard>
 
         <BentoCard
-          className="col-span-3 lg:col-span-1 lg:row-span-4 lg:row-start-1 lg:col-start-3"
+          className="col-span-3 lg:col-span-1 lg:row-span-4 lg:row-start-1 lg:col-start-3 lg:sticky lg:top-4 lg:self-start"
           name="Фильтры"
-          description="Параметры запуска пайплайна"
+          description="Параметры запуска"
         >
-          <div className="flex h-full flex-col gap-3">
+          <div className="flex flex-col gap-3">
             <div className="grid grid-cols-2 gap-3">
               <Field label="Макс. сделок">
                 <Input
@@ -274,7 +276,7 @@ export function RunView() {
               />
             </Field>
 
-            <div className="mt-auto space-y-3 pt-1">
+            <div className="space-y-3 pt-1">
               <RippleButton
                 disabled={saveState === "saving"}
                 onClick={() => void save()}
@@ -357,7 +359,7 @@ export function RunView() {
         <BentoCard
           className="col-span-3 lg:col-span-2 lg:row-start-2"
           name="Вход"
-          description="Войдите в кабинет, затем подтвердите здесь."
+          description="Войди в кабинет, затем подтверди"
           tone={loginWaiting || (running && jobMode === "login") ? "active" : "default"}
           badge={
             <StepBadge n={2} active={loginWaiting || (running && jobMode === "login")} />
@@ -387,7 +389,7 @@ export function RunView() {
         <BentoCard
           className="col-span-3 lg:col-span-2 lg:row-start-3"
           name="Обработка и переводы"
-          description="Приём сделок и переводы через телефон."
+          description="Приём сделок и переводы"
           tone={
             startActive || (!running && !loginWaiting && !receiptsWaiting)
               ? "active"
@@ -415,7 +417,7 @@ export function RunView() {
         <BentoCard
           className="col-span-3 lg:col-span-2 lg:row-start-4"
           name="Чеки"
-          description="Чеки и видео подтягиваются с галереи телефона; затем нажмите «Загрузить»."
+          description="Файлы с телефона, затем «Загрузить»"
           tone={receiptsWaiting || receiptsPhase === "processing" ? "active" : "default"}
           muted={!showReceiptPanel}
           badge={
@@ -427,9 +429,19 @@ export function RunView() {
                 disabled={!receiptsWaiting || receiptsPhase === "processing"}
                 onClick={() => void confirmReceipts()}
                 rippleColor="#fde68a"
-                className="border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100"
+                className={cn(
+                  "min-w-[8.5rem] border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100",
+                  receiptsPhase === "processing" && "opacity-95",
+                )}
               >
-                {loadLabel}
+                {receiptsPhase === "processing" ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" />
+                    Загрузка…
+                  </>
+                ) : (
+                  loadLabel
+                )}
               </RippleButton>
               <RippleButton
                 onClick={() => void openFolder()}
@@ -446,6 +458,7 @@ export function RunView() {
         </BentoCard>
       </BentoGrid>
     </div>
+    </BlurFade>
   );
 }
 

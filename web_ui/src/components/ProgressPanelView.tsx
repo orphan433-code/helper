@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { WorkPulse } from "@/components/WorkPulse";
 import { api, apiCall } from "@/lib/api";
 import type { DealRow, ProgressPanel } from "@/lib/types";
 import { useConsole } from "@/store/console";
@@ -10,54 +11,86 @@ export function ProgressPanelView({
   mode = "default",
 }: {
   panel: ProgressPanel;
-  mode?: "pipeline" | "receipts" | "default";
+  mode?: "pipeline" | "receipts" | "decline" | "default";
 }) {
   if (!panel.visible) return null;
+  if (mode === "decline" && panel.processing && !panel.done) return null;
 
-  // Полоска только пока идёт работа; готово — без строки, просто зелёный статус
-  const showBar = panel.processing && !panel.done;
-  const indeterminate = showBar && panel.progress == null;
+  const phase = panel.phase || "";
+  const isUploading = mode === "receipts" && phase === "processing";
+  const busyVisual = isUploading;
+  const showBar =
+    panel.processing &&
+    !panel.done &&
+    (mode !== "receipts" ||
+      phase === "processing" ||
+      (phase === "waiting" && (panel.progress ?? 0) > 0));
+  const indeterminate =
+    showBar && (panel.progress == null || (busyVisual && panel.progress === 0));
   const barWidth =
     showBar && !indeterminate && panel.progress != null
-      ? `${Math.max(0, Math.min(100, panel.progress * 100))}%`
+      ? Math.max(0, Math.min(100, panel.progress * 100))
       : undefined;
+
+  const nested = mode === "decline";
 
   return (
     <div
       className={cn(
-        "mt-3 rounded-xl border bg-muted/20 p-3",
-        panel.processing && !panel.done && "border-slate-300",
-        panel.done && !panel.hasErrors && "border-emerald-200 bg-emerald-50/40",
-        panel.done && panel.hasErrors && "border-amber-200",
+        nested
+          ? "p-0"
+          : "mt-3 overflow-hidden rounded-xl border bg-muted/20 p-3",
+        !nested && panel.processing && !panel.done && !busyVisual && "border-slate-300",
+        !nested && busyVisual && "border-amber-300 bg-amber-50/50",
+        !nested && panel.done && !panel.hasErrors && "border-emerald-200 bg-emerald-50/40",
+        !nested && panel.done && panel.hasErrors && "border-amber-200",
       )}
     >
-      <div className="mb-2 flex items-baseline justify-between gap-2">
-        <div className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
-          {panel.title}
-        </div>
-        <div className="font-mono text-xs text-slate-600">{panel.summary}</div>
-      </div>
-      {showBar && (
+      <div className="mb-2 flex items-center justify-between gap-2">
         <div
           className={cn(
-            "h-1.5 overflow-hidden rounded-full bg-slate-100",
-            indeterminate && "pbar-indeterminate",
+            "flex items-center gap-2 text-[11px] font-bold uppercase tracking-wide",
+            busyVisual ? "text-amber-800" : "text-muted-foreground",
           )}
         >
+          {busyVisual && <WorkPulse size="sm" tone="amber" />}
+          {panel.processing && !panel.done && !busyVisual && (
+            <WorkPulse size="sm" tone="slate" />
+          )}
+          {panel.title}
+        </div>
+        <div
+          className={cn(
+            "font-mono text-xs",
+            busyVisual ? "font-semibold text-amber-900" : "text-slate-600",
+          )}
+        >
+          {panel.summary}
+        </div>
+      </div>
+
+      {showBar && !indeterminate && barWidth != null && (
+        <div className="relative h-1.5 overflow-hidden rounded-full bg-slate-100">
           <span
             className={cn(
-              "block h-full rounded-full bg-emerald-500/90",
-              !indeterminate && "transition-all",
+              "block h-full origin-left rounded-full transition-transform duration-500 ease-out",
+              busyVisual ? "bg-amber-500" : "bg-slate-800",
             )}
-            style={barWidth ? { width: barWidth } : undefined}
+            style={{ transform: `scaleX(${barWidth / 100})` }}
           />
         </div>
       )}
-      {panel.message && !panel.done && (
-        <p className="mt-2 text-sm text-muted-foreground">{panel.message}</p>
+
+      {busyVisual && (
+        <p className="relative mt-2 text-sm font-medium text-amber-900">
+          {panel.message || "Загрузка…"}
+        </p>
+      )}
+      {panel.message && !panel.done && !busyVisual && (
+        <p className="relative mt-2 text-sm text-muted-foreground">{panel.message}</p>
       )}
       {panel.deals.length > 0 && (
-        <ul className={cn("max-h-64 space-y-1.5 overflow-auto", showBar || panel.message ? "mt-2" : "")}>
+        <ul className={cn("relative space-y-1.5", showBar || panel.message ? "mt-2" : "")}>
           {panel.deals.map((d) => (
             <DealItem
               key={d.id}
@@ -70,7 +103,7 @@ export function ProgressPanelView({
         </ul>
       )}
       {panel.errorDetail && (
-        <pre className="mt-2 whitespace-pre-wrap rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+        <pre className="relative mt-2 whitespace-pre-wrap rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">
           {panel.errorDetail}
         </pre>
       )}
@@ -127,7 +160,7 @@ function statusMeta(state: string, previewHint?: string, error?: string) {
     case "uploading":
       return {
         label: "загрузка…",
-        className: "bg-emerald-50 text-emerald-700 border border-emerald-200",
+        className: "bg-amber-100 text-amber-900 border border-amber-300",
       };
     case "skipped":
       return {
@@ -164,7 +197,7 @@ function DealItem({
   actionsDisabled,
 }: {
   deal: DealRow;
-  mode: "pipeline" | "receipts" | "default";
+  mode: "pipeline" | "receipts" | "decline" | "default";
   allowCancel: boolean;
   actionsDisabled: boolean;
 }) {
@@ -194,11 +227,10 @@ function DealItem({
   const cancelDeal = async () => {
     if (!d.order_id) return;
     const ok = await openDialog({
-      title: "Отмена сделки",
-      body:
-        `Отменить сделку ${d.index} (карта ${d.card || "????"})?\n\n` +
-        "Сделка будет отменена без чека.",
+      title: "Отменить сделку",
+      body: `№${d.index} · ${d.card || "карта?"}`,
       danger: true,
+      confirmLabel: "Отменить",
     });
     if (!ok) return;
     await apiCall(() => api().cancel_completion_deal(d.order_id!), onErr);
@@ -207,10 +239,9 @@ function DealItem({
   const retryDeal = async () => {
     if (!d.order_id) return;
     const ok = await openDialog({
-      title: "Повтор отправки",
-      body:
-        `Повторить отправку чека по сделке ${d.index} (карта ${d.card || "????"})?\n\n` +
-        "Чек уже найден. Бот снова загрузит его и подтвердит выплату.",
+      title: "Повторить чек",
+      body: `№${d.index} · ${d.card || "карта?"}`,
+      confirmLabel: "Повторить",
     });
     if (!ok) return;
     await apiCall(() => api().retry_completion_deal(d.order_id!), onErr);
@@ -219,10 +250,9 @@ function DealItem({
   const rescanDeal = async () => {
     if (!d.order_id) return;
     const ok = await openDialog({
-      title: "Новый файл",
-      body:
-        `Сбросить чек по сделке ${d.index} (карта ${d.card || "????"})?\n\n` +
-        "Положи новый файл и снова нажми «Загрузить».",
+      title: "Другой файл",
+      body: `№${d.index} · ${d.card || "карта?"}`,
+      confirmLabel: "Сбросить",
     });
     if (!ok) return;
     await apiCall(() => api().rescan_completion_deal(d.order_id!), onErr);
@@ -231,93 +261,101 @@ function DealItem({
   return (
     <li
       className={cn(
-        "rounded-lg border bg-white px-2.5 py-2 text-xs",
+        "rounded-lg border bg-white px-3 py-2.5 text-xs transition-colors",
         d.active && "border-emerald-200 bg-emerald-50/40",
-        (state === "paid" || state === "done") &&
-          "border-emerald-200 bg-emerald-50/70",
+        state === "uploading" && "border-amber-300 bg-amber-50/70",
+        (state === "paid" || state === "done") && "border-emerald-200 bg-emerald-50/70",
         state === "skipped" && "opacity-80 border-border",
         state !== "paid" &&
           state !== "done" &&
           state !== "skipped" &&
+          state !== "uploading" &&
           !d.active &&
           "border-border",
       )}
     >
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="font-semibold">
-          <span className="mr-2 font-mono text-muted-foreground">#{d.index}</span>
-          {d.holder || "—"}
-        </span>
-        {d.amount && (
-          <span className="font-mono text-sm font-semibold text-emerald-700">
-            {d.amount}
-          </span>
-        )}
-      </div>
-      <div className="mt-1.5 flex flex-wrap items-center gap-2">
-        {d.card && <span className="font-mono text-muted-foreground">{d.card}</span>}
-        {meta.label && (
-          <span
-            className={cn(
-              "rounded-md px-1.5 py-0.5 text-[11px] font-semibold",
-              meta.className,
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-2">
+        <div className="min-w-0 space-y-1.5">
+          <div className="truncate font-semibold text-sm leading-snug">
+            <span className="mr-1.5 font-mono text-muted-foreground">#{d.index}</span>
+            {d.holder || "—"}
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {d.card && (
+              <span className="font-mono text-muted-foreground">{d.card}</span>
             )}
-          >
-            {meta.label}
-          </span>
-        )}
-      </div>
-      {showFlags && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          <Badge variant={d.has_shot ? "success" : "secondary"}>
-            {d.has_shot ? "Чек есть" : "Нет чека"}
-          </Badge>
-          {d.needs_video && (
-            <Badge variant={d.has_video ? "success" : "secondary"}>
-              {d.has_video ? "Видео есть" : "Нет видео"}
-            </Badge>
+            {meta.label && (
+              <span
+                className={cn(
+                  "rounded-md px-1.5 py-0.5 text-[11px] font-semibold",
+                  meta.className,
+                )}
+              >
+                {meta.label}
+              </span>
+            )}
+          </div>
+          {showFlags && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Badge variant={d.has_shot ? "success" : "secondary"}>
+                {d.has_shot ? "Чек есть" : "Нет чека"}
+              </Badge>
+              {d.needs_video && (
+                <Badge variant={d.has_video ? "success" : "secondary"}>
+                  {d.has_video ? "Видео есть" : "Нет видео"}
+                </Badge>
+              )}
+              {d.file_name && (
+                <span className="max-w-full truncate font-mono text-[10px] text-muted-foreground">
+                  {d.file_name}
+                </span>
+              )}
+            </div>
           )}
-          {d.file_name && (
-            <span className="truncate font-mono text-[10px] text-muted-foreground">
-              {d.file_name}
+        </div>
+
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          {d.amount && (
+            <span className="whitespace-nowrap font-mono text-sm font-semibold text-emerald-700">
+              {d.amount}
             </span>
           )}
+          {(showRetry || showRescan || showCancel) && (
+            <div className="flex flex-wrap justify-end gap-1.5">
+              {showRetry && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={actionsDisabled}
+                  onClick={() => void retryDeal()}
+                >
+                  Повторить
+                </Button>
+              )}
+              {showRescan && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={actionsDisabled}
+                  onClick={() => void rescanDeal()}
+                >
+                  Новый файл
+                </Button>
+              )}
+              {showCancel && (
+                <Button
+                  size="sm"
+                  variant="danger"
+                  disabled={actionsDisabled}
+                  onClick={() => void cancelDeal()}
+                >
+                  Отменить
+                </Button>
+              )}
+            </div>
+          )}
         </div>
-      )}
-      {(showRetry || showRescan || showCancel) && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {showRetry && (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={actionsDisabled}
-              onClick={() => void retryDeal()}
-            >
-              Повторить
-            </Button>
-          )}
-          {showRescan && (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={actionsDisabled}
-              onClick={() => void rescanDeal()}
-            >
-              Новый файл
-            </Button>
-          )}
-          {showCancel && (
-            <Button
-              size="sm"
-              variant="danger"
-              disabled={actionsDisabled}
-              onClick={() => void cancelDeal()}
-            >
-              Отменить
-            </Button>
-          )}
-        </div>
-      )}
+      </div>
     </li>
   );
 }

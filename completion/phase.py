@@ -23,7 +23,11 @@ from core.human import HumanTiming, parse_human_timing
 from ui.progress import notify_completion_progress
 from ui.job_control import JobStopped, raise_if_stopped
 from core.logkit import debug, error, info, ok, section, warn
-from platcore.completion import complete_deal_on_platcore, ensure_dropzone_on_page
+from platcore.completion import (
+    complete_deal_on_platcore,
+    ensure_dropzone_on_page,
+    reopen_deal_for_completion,
+)
 from platcore.dispute import parse_dispute_config, submit_dispute_without_proof
 from platcore.pipeline import AcceptedDeal
 from completion.proof import list_new_proof_files, pick_latest_video
@@ -409,6 +413,7 @@ async def _complete_one_matched_deal(
     timing: HumanTiming,
     fake_money_sent: bool,
     page_by_order: dict[str, Page],
+    force_reopen: bool = False,
 ) -> None:
     """Одна сделка: upload + Money sent + Confirmed. Ошибка → FAILED + UI retry."""
     proof = Path(deal.proof_path or "")
@@ -465,7 +470,17 @@ async def _complete_one_matched_deal(
 
     raise_if_stopped()
     try:
-        await ensure_dropzone_on_page(page)
+        if force_reopen:
+            info(f"#{deal.index}: reopen сделки → Approve → dropzone")
+            await reopen_deal_for_completion(page, timing=timing)
+        else:
+            try:
+                await ensure_dropzone_on_page(page)
+            except JobStopped:
+                raise
+            except Exception:
+                warn(f"#{deal.index}: dropzone нет — reopen + Approve")
+                await reopen_deal_for_completion(page, timing=timing)
 
         def _progress(msg: str, *, _idx: int = deal.index) -> None:
             notify_completion_progress(
@@ -846,13 +861,14 @@ async def retry_deal_money_sent(
 
     deal.state = DealCompletionState.PROOF_MATCHED
     deal.error = ""
-    info(f"#{deal.index}: повторная загрузка чека…")
+    info(f"#{deal.index}: повтор — reopen сделки + Approve + загрузка чека…")
     await _complete_one_matched_deal(
         deal,
         session=session,
         timing=timing,
         fake_money_sent=fake_money_sent,
         page_by_order=page_by_order,
+        force_reopen=True,
     )
     if deal.state == DealCompletionState.FAILED:
         notify_completion_progress(

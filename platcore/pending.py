@@ -96,12 +96,12 @@ def pending_monitor_url(monitor_url: str) -> str:
     """Тот же pay-out, но status=pending."""
     raw = (monitor_url or "").strip()
     if not raw:
-        return "https://hz.temkitemki.work/pay-out?status=pending&limit=100"
+        return "https://hz.temkitemki.work/pay-out?status=pending&limit=500"
     parts = urlparse(raw)
     q = parse_qs(parts.query, keep_blank_values=True)
     q["status"] = ["pending"]
     if "limit" not in q:
-        q["limit"] = ["100"]
+        q["limit"] = ["500"]
     query = urlencode({k: v[-1] if isinstance(v, list) else v for k, v in q.items()})
     return urlunparse(parts._replace(query=query))
 

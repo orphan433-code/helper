@@ -33,7 +33,7 @@ _VIDEO_REQUIRED_RE = re.compile(
     r"Please attach video with transaction|Deal payout video is require",
     re.I,
 )
-_VIDEO_REQUIRED_RECOVERY_ATTEMPTS = 2
+_SEND_RECOVERY_ATTEMPTS = 2
 
 
 class VideoRequiredPlatformBug(Exception):
@@ -226,21 +226,50 @@ async def _has_video_required_error(page: Page) -> bool:
     return False
 
 
-async def _recover_after_video_required_bug(
+def _should_reopen_after_send_error(exc: BaseException, *, has_video: bool) -> bool:
+    """Dropzone мёртв / нет Confirmed — reopen сделки. Видео-таймаут 600 с не трогаем."""
+    text = str(exc).lower()
+    is_timeout = "после money sent нет confirmed" in text
+    if is_timeout and has_video:
+        return False
+    needles = (
+        "dropzone",
+        "attach document",
+        "money sent не появил",
+        "после money sent нет confirmed",
+        "не удалось нажать approve",
+        "нет approve",
+    )
+    return any(n in text for n in needles)
+
+
+async def reopen_deal_for_completion(
     page: Page,
     *,
     timing: HumanTiming,
+    platcore_url: str = "",
     on_progress: Callable[[str], None] | None = None,
-) -> None:
-    """Reload → Approve → снова модалка с dropzone (баг платформы)."""
-    msg = "PlatCore bug: Please attach video — reload + Approve…"
+    reason: str = "",
+) -> Page:
+    """
+    Как старый complete_deals: goto dealId → Order info Approve → свежий dropzone.
+    Dropzone после ошибки Money sent часто мёртв — без reopen upload бесполезен.
+    """
+    if page.is_closed():
+        raise PanicError("PlatCore: вкладка сделки закрыта — reopen невозможен")
+    url = (platcore_url or page.url or "").strip()
+    msg = reason or "PlatCore: reopen сделки → Approve → dropzone…"
     warn(msg)
     if on_progress is not None:
         on_progress(msg)
-    await page.reload(wait_until="domcontentloaded")
+    if url:
+        await page.goto(url, wait_until="domcontentloaded")
+    else:
+        await page.reload(wait_until="domcontentloaded")
     await asyncio.sleep(1.0)
     await ensure_completion_deal_ready(page, timing=timing)
-    debug("После reload+Approve: dropzone снова готов")
+    debug("После reopen+Approve: dropzone снова готов")
+    return page
 
 
 async def _confirmed_modal(page: Page):
@@ -527,8 +556,7 @@ async def open_deal_page(
 ) -> Page:
     if reuse_page is not None and not reuse_page.is_closed():
         page = reuse_page
-        if page.url != platcore_url:
-            await page.goto(platcore_url, wait_until="domcontentloaded")
+        await page.goto(platcore_url, wait_until="domcontentloaded")
     else:
         page = await context.new_page()
         await page.goto(platcore_url, wait_until="domcontentloaded")
@@ -562,7 +590,8 @@ async def complete_deal_on_platcore(
         extras.append(video_path)
 
     last_exc: BaseException | None = None
-    for attempt in range(1, _VIDEO_REQUIRED_RECOVERY_ATTEMPTS + 1):
+    has_video_file = video_path is not None
+    for attempt in range(1, _SEND_RECOVERY_ATTEMPTS + 1):
         try:
             has_video = await upload_proof_to_dropzone(page, proof_path, *extras)
             return await click_money_sent(
@@ -576,15 +605,37 @@ async def complete_deal_on_platcore(
             last_exc = exc
             warn(
                 f"{prefix}баг «attach video» "
-                f"(попытка {attempt}/{_VIDEO_REQUIRED_RECOVERY_ATTEMPTS})"
+                f"(попытка {attempt}/{_SEND_RECOVERY_ATTEMPTS})"
             )
-            if attempt >= _VIDEO_REQUIRED_RECOVERY_ATTEMPTS:
+            if attempt >= _SEND_RECOVERY_ATTEMPTS:
                 break
-            await _recover_after_video_required_bug(
-                page, timing=timing, on_progress=on_progress
+            await reopen_deal_for_completion(
+                page,
+                timing=timing,
+                on_progress=on_progress,
+                reason="PlatCore bug: Please attach video — reopen + Approve…",
+            )
+        except PanicError as exc:
+            last_exc = exc
+            if attempt >= _SEND_RECOVERY_ATTEMPTS:
+                break
+            if not _should_reopen_after_send_error(exc, has_video=has_video_file):
+                raise
+            warn(
+                f"{prefix}ошибка отправки, reopen+Approve "
+                f"(попытка {attempt}/{_SEND_RECOVERY_ATTEMPTS})"
+            )
+            await reopen_deal_for_completion(
+                page,
+                timing=timing,
+                on_progress=on_progress,
             )
 
-    raise PanicError(
-        f"{prefix}PlatCore: после reload+Approve снова "
-        f"«Please attach video» — {last_exc}"
-    )
+    if isinstance(last_exc, VideoRequiredPlatformBug):
+        raise PanicError(
+            f"{prefix}PlatCore: после reopen+Approve снова "
+            f"«Please attach video» — {last_exc}"
+        )
+    if last_exc is not None:
+        raise last_exc
+    raise PanicError(f"{prefix}PlatCore: отправка не удалась")

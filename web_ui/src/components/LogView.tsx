@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { BlurFade } from "@/components/ui/blur-fade";
+import { BentoCard } from "@/components/ui/bento-grid";
 import { useConsole } from "@/store/console";
 import { cn } from "@/lib/utils";
 
@@ -31,17 +32,11 @@ export function LogView() {
   };
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
-        <div>
-          <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-muted-foreground">
-            Live feed
-          </p>
-          <CardTitle>Журнал</CardTitle>
-          <CardDescription>
-            <span id="logs-count">{logs.length}</span> событий
-          </CardDescription>
-        </div>
+    <BlurFade delay={0.05} inView>
+    <BentoCard
+      name="Журнал"
+      description={`${logs.length} событий`}
+      cta={
         <div className="flex gap-2">
           <Button variant="ghost" size="sm" onClick={() => clearLogs()}>
             Очистить
@@ -50,12 +45,13 @@ export function LogView() {
             Копировать
           </Button>
         </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
+      }
+    >
+      <div className="space-y-3">
         <Input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Поиск по сообщению или сервису…"
+          placeholder="Поиск…"
         />
         <div className="max-h-[560px] overflow-auto rounded-xl border border-border bg-white font-mono text-xs">
           {filtered.length === 0 ? (
@@ -72,12 +68,12 @@ export function LogView() {
                     "font-bold uppercase",
                     l.level === "error" && "text-red-600",
                     l.level === "warning" && "text-amber-600",
-                    l.level === "info" && "text-teal-700",
+                    l.level === "info" && "text-slate-600",
                   )}
                 >
                   {l.level || "info"}
                 </span>
-                <span className="hidden truncate text-teal-800 sm:block">{l.service}</span>
+                <span className="hidden truncate text-slate-500 sm:block">{l.service}</span>
                 <div className="min-w-0">
                   <div className="truncate text-foreground">{l.message}</div>
                   {l.tags && l.tags.length > 0 && (
@@ -94,7 +90,8 @@ export function LogView() {
             ))
           )}
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </BentoCard>
+    </BlurFade>
   );
 }

@@ -21,6 +21,7 @@ bank_decline:
   presets:
     tbc:
       patterns: [tbc]
+      card_prefixes: ["4315"]
     bog:
       label: Bank of Georgia
       patterns: ["bank of georgia", georgia, bog]

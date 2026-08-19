@@ -17,6 +17,8 @@ const buttonVariants = cva(
         ghost: "text-muted-foreground hover:bg-muted/70 hover:text-foreground",
         danger:
           "bg-red-50 text-red-700 border border-red-200 hover:bg-red-100",
+        destructive:
+          "bg-red-600 text-white hover:bg-red-700 border-0",
         warn: "bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100",
       },
       size: {

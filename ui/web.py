@@ -558,7 +558,11 @@ class TzkApi:
                 status="section",
             )
         else:
-            bank_word = "Bank of Georgia" if bank_key == "bog" else "TBC"
+            bank_word = (
+                "Bank of Georgia / 548888"
+                if bank_key == "bog"
+                else "TBC / 4315"
+            )
             self._status = f"Отменяю сделки ({bank_word})…"
             self._push_log(
                 f"Отмена по банку: {bank_word} ({bank_key})",

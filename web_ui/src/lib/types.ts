@@ -9,6 +9,7 @@ export type DealRow = {
   status?: string;
   state?: string;
   error?: string;
+  ok?: boolean;
   active?: boolean;
   order_id?: string;
   has_shot?: boolean;
@@ -87,6 +88,8 @@ export type DialogState = {
   danger?: boolean;
   /** Только кнопка OK, без «Назад» (итог операции). */
   alert?: boolean;
+  confirmLabel?: string;
+  cancelLabel?: string;
   resolve?: (ok: boolean) => void;
 };
 

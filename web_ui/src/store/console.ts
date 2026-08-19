@@ -23,6 +23,22 @@ function emptyProgress(title: string): ProgressPanel {
   };
 }
 
+/** Панель «идёт работа» для редиректа / снятия — пока бэкенд не прислал итог. */
+function busyDeclinePanel(jobMode: string): ProgressPanel {
+  const isRedirect = jobMode === "redirect";
+  return {
+    visible: true,
+    processing: true,
+    done: false,
+    title: isRedirect ? "Редирект" : "Отмена",
+    summary: "…",
+    message: isRedirect ? "Передаю…" : "Отменяю…",
+    deals: [],
+    progress: undefined,
+    phase: "processing",
+  };
+}
+
 function formatAmountTjs(raw: unknown): string {
   const s = String(raw ?? "").trim();
   if (!s || s === "0" || s === "0.0") return "";
@@ -47,6 +63,7 @@ function asDeals(raw: unknown): DealRow[] {
       status: String(row.status || state || ""),
       state,
       error: row.error ? String(row.error) : undefined,
+      ok: row.ok !== false && !row.error,
       active: !!row.active,
       order_id: row.order_id ? String(row.order_id) : undefined,
       has_shot: !!(row.has_shot || row.shot),
@@ -150,6 +167,7 @@ type ConsoleState = {
   recovery: RecoveryState;
   logs: LogEvent[];
   dialog: DialogState;
+  declineResultOpen: boolean;
   setView: (v: ConsoleState["view"]) => void;
   setStatus: (text: string, kind?: StatusKind | string) => void;
   setRunning: (running: boolean, jobMode?: string) => void;
@@ -165,6 +183,7 @@ type ConsoleState = {
   applyReceiptPreview: (preview: Record<string, unknown>) => void;
   updateDeclineResult: (payload: Record<string, unknown>) => void;
   clearDeclineResult: () => void;
+  dismissDeclineResult: () => void;
   appendCancelAlert: (payload: Record<string, unknown>) => void;
   clearCancelAlerts: () => void;
   setConfirmPrompt: (prompt: string, mode: string) => void;
@@ -238,15 +257,19 @@ export const useConsole = create<ConsoleState>((set, get) => ({
   },
   logs: [],
   dialog: { open: false, title: "", body: "" },
+  declineResultOpen: false,
 
   setView: (view) => set({ view }),
 
   setStatus: (text, kind) => {
-    const k = (["idle", "running", "waiting", "success", "error"].includes(
-      String(kind),
-    )
-      ? kind
-      : "idle") as StatusKind;
+    const raw = String(kind || "");
+    const k = (
+      ["idle", "running", "waiting", "success", "error"].includes(raw)
+        ? raw
+        : get().running
+          ? "running"
+          : "idle"
+    ) as StatusKind;
     set({
       statusText: text || IDLE_STATUS,
       statusKind: k,
@@ -254,12 +277,21 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     });
   },
 
-  setRunning: (running, jobMode = "") =>
-    set({
+  setRunning: (running, jobMode = "") => {
+    const mode = jobMode || "";
+    const patch: Partial<ConsoleState> = {
       running,
-      jobMode: jobMode || "",
+      jobMode: mode,
       waitingConfirm: running ? get().waitingConfirm : false,
-    }),
+    };
+    if (running && (mode === "redirect" || mode === "decline")) {
+      patch.decline = busyDeclinePanel(mode);
+      patch.declineResultOpen = false;
+      patch.statusKind = "running";
+      patch.statusLabel = LABELS.running;
+    }
+    set(patch);
+  },
 
   patchSettings: (p) => set({ settings: { ...get().settings, ...p } }),
 
@@ -346,6 +378,14 @@ export const useConsole = create<ConsoleState>((set, get) => ({
       patch.recovery = state.recovery_enabled
         ? { ...get().recovery, open: true }
         : { ...get().recovery, open: false };
+      // После перезагрузки UI — если редирект/снятие ещё идут, показать busy-панель
+      if (
+        running &&
+        (jobMode === "redirect" || jobMode === "decline") &&
+        !get().decline.processing
+      ) {
+        patch.decline = busyDeclinePanel(jobMode);
+      }
     }
 
     set(patch);
@@ -441,14 +481,17 @@ export const useConsole = create<ConsoleState>((set, get) => ({
         ? `0 из ${total} готовы`
         : `${done} из ${total}`;
 
+    // processing + done=0 → undefined = indeterminate-полоска (видно, что идёт работа)
     const progress =
       phase === "waiting"
         ? 0
-        : total > 0
-          ? done / total
-          : phase === "done"
-            ? 1
-            : undefined;
+        : phase === "done"
+          ? 1
+          : phase === "processing" && done === 0
+            ? undefined
+            : total > 0
+              ? done / total
+              : undefined;
 
     set({
       // Как в legacy: сделки уходят из «Обработка» в «Чеки»
@@ -529,34 +572,35 @@ export const useConsole = create<ConsoleState>((set, get) => ({
         visible: true,
         processing: false,
         done: true,
-        title: String(
-          payload.title ||
-            (hasErrors
-              ? isRedirect
-                ? "Передано с ошибками"
-                : "Снято с ошибками"
-              : isRedirect
-                ? "Сделки переданы"
-                : "Сделки сняты"),
-        ),
+        phase: "done",
+        title: String(payload.title || (hasErrors ? "Ошибки" : "Готово")),
         summary:
           total === 0 ? "0" : `${doneCount} из ${total}${failed ? `, ошибок ${failed}` : ""}`,
         message,
         deals: asDeals(payload.deals),
         success: payload.success_text ? String(payload.success_text) : undefined,
         hasErrors,
+        progress: total > 0 ? doneCount / total : doneCount > 0 ? 1 : 0,
       },
-    });
-
-    void get().openDialog({
-      title: hasErrors ? "Не успешно" : "Успешно",
-      body: message,
-      danger: hasErrors,
-      alert: true,
+      declineResultOpen: true,
     });
   },
 
-  clearDeclineResult: () => set({ decline: emptyProgress("Результат") }),
+  clearDeclineResult: () => {
+    const { running, jobMode } = get();
+    // Поток редиректа/снятия зовёт clear в начале — не прячем панель, а показываем «идёт…»
+    if (running && (jobMode === "redirect" || jobMode === "decline")) {
+      set({ decline: busyDeclinePanel(jobMode), declineResultOpen: false });
+      return;
+    }
+    set({ decline: emptyProgress("Результат"), declineResultOpen: false });
+  },
+
+  dismissDeclineResult: () =>
+    set({
+      declineResultOpen: false,
+      decline: emptyProgress("Результат"),
+    }),
 
   appendCancelAlert: (payload) => {
     const item: CancelAlert = {
@@ -576,6 +620,15 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     const who = item.match_holder || item.match_label || item.card || "";
     get().setStatus("Отмена списания" + (who ? `: ${who}` : ""), "error");
     get().appendLog(`[ALERT] Отмена списания ${item.amount || ""} ${item.card || ""}`);
+    if (!get().dialog.open) {
+      const bits = [item.amount, item.card, who].filter(Boolean);
+      void get().openDialog({
+        title: "Списание отменили",
+        body: bits.join(" · ") || "Перевод не прошёл",
+        danger: true,
+        alert: true,
+      });
+    }
   },
 
   clearCancelAlerts: () => set({ cancels: [] }),
@@ -642,6 +695,8 @@ export const useConsole = create<ConsoleState>((set, get) => ({
           body: opts.body || "",
           danger: opts.danger,
           alert: opts.alert,
+          confirmLabel: opts.confirmLabel,
+          cancelLabel: opts.cancelLabel,
           resolve,
         },
       });

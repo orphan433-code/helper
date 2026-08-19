@@ -8,7 +8,7 @@
 # =============================================================================
 
 dashboard:
-  monitor_url: "https://hz.temkitemki.work/pay-out?limit=100&status=new&filter=opened"
+  monitor_url: "https://hz.temkitemki.work/pay-out?limit=500&status=new&filter=opened"
   poll_interval_sec: 2.0
   process_existing_on_start: false
 
@@ -41,8 +41,8 @@ validation:
 browser:
   user_data_dir: "../CNY/browser_profile"
   headless: false
-  # Масштаб вкладок Chromium (0.7 = 70% — больше строк списка в окне)
-  page_zoom: 0.7
+  # Масштаб вкладок Chromium (0.4 = 40% — больше строк списка в окне)
+  page_zoom: 0.4
 
 human:
   fast_mode: true
