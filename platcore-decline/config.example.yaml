@@ -16,6 +16,8 @@ browser:
 bank_decline:
   api_base_url: ""
   default_bank: tbc
+  # Список BIN отмены в коде: core/decline_bins.py (едет через git pull).
+  # max_per_run / тумблеры — локально, коллегам config.yaml слать не надо.
   patterns:
     - tbc
   presets:
@@ -37,6 +39,8 @@ bank_redirect:
   # Фильтры UI (сохраняются между сессиями)
   skip_bog: false      # не редиректить Bank of Georgia / 548888…
   visa_only: false     # только карты Visa (4…)
+  max_remaining: false # только сделки с Time remaining < max_remaining_hours
+  max_remaining_hours: 4
   skip_card_prefixes:
     - "548888"
   skip_bank_patterns:

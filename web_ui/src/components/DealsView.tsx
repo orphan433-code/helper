@@ -8,7 +8,6 @@ import { RippleButton } from "@/components/ui/ripple-button";
 import { api, apiCall } from "@/lib/api";
 import { TRADERS } from "@/lib/types";
 import { useConsole } from "@/store/console";
-import { cn } from "@/lib/utils";
 
 export function DealsView() {
   const s = useConsole((st) => st.settings);
@@ -29,7 +28,15 @@ export function DealsView() {
   const selectedTraders = TRADERS.filter((t) => s.redirAccounts[t.id]).map((t) => t.traderId);
 
   const saveFilters = () =>
-    apiCall(() => api().save_redirect_filters(s.redirSkipBog, s.redirVisaOnly), err);
+    apiCall(
+      () =>
+        api().save_redirect_filters(
+          s.redirSkipBog,
+          s.redirVisaOnly,
+          s.redirMaxRemaining,
+        ),
+      err,
+    );
 
   const redirect = async (status: string) => {
     if (opsBusy) return;
@@ -71,26 +78,35 @@ export function DealsView() {
         status,
         s.redirSkipBog,
         s.redirVisaOnly,
+        s.redirMaxRemaining,
       );
     }, err);
   };
 
   const declineRun = async () => {
     if (opsBusy) return;
-    const label = s.declineBank === "tbc" ? "TBC" : "BoG";
-    const hint =
-      s.declineBank === "tbc"
-        ? "имя TBC или карты 4315…"
-        : "имя Bank of Georgia или карты 548888…";
+    const bins = s.declineBinList.filter((p) => s.declineBins[p]);
+    if (!bins.length && !s.declineTbc) {
+      await openDialog({
+        title: "Отмена",
+        body: "Включи TBC или хотя бы один BIN",
+        alert: true,
+      });
+      return;
+    }
+    const parts = [
+      ...(s.declineTbc ? ["TBC"] : []),
+      ...(bins.length ? [`BIN ${bins.join(", ")}`] : []),
+    ];
     const ok = await openDialog({
       title: "Отменить сделки",
-      body: `Банк ${label} (${hint})`,
+      body: `${parts.join(" + ")} · до 10 шт. · сначала меньший остаток времени`,
       danger: true,
       confirmLabel: "Отменить",
     });
     if (!ok) return;
     clearDeclineResult();
-    await apiCall(() => api().start_decline(s.declineBank), err);
+    await apiCall(() => api().start_decline([...bins], s.declineTbc), err);
   };
 
   return (
@@ -168,6 +184,12 @@ export function DealsView() {
               disabled={opsBusy}
               onChange={(v) => patch({ redirVisaOnly: v })}
             />
+            <ToggleRow
+              label="Остаток < 4ч"
+              checked={s.redirMaxRemaining}
+              disabled={opsBusy}
+              onChange={(v) => patch({ redirMaxRemaining: v })}
+            />
           </div>
 
           <div className="flex flex-wrap gap-2 pt-1">
@@ -195,22 +217,25 @@ export function DealsView() {
         name="Отмена"
       >
         <div className="flex flex-col gap-3">
+          <ToggleRow
+            label="TBC"
+            checked={s.declineTbc}
+            disabled={opsBusy}
+            onChange={(v) => patch({ declineTbc: v })}
+          />
           <div className="grid grid-cols-2 gap-2">
-            {(["tbc", "bog"] as const).map((b) => (
-              <button
-                key={b}
-                type="button"
+            {s.declineBinList.map((bin) => (
+              <ToggleRow
+                key={bin}
+                label={bin}
+                checked={!!s.declineBins[bin]}
                 disabled={opsBusy}
-                onClick={() => patch({ declineBank: b })}
-                className={cn(
-                  "cursor-pointer rounded-xl border px-3 py-2.5 text-sm font-semibold transition-colors disabled:opacity-60",
-                  s.declineBank === b
-                    ? "border-slate-400 bg-slate-50"
-                    : "border-border/80 bg-muted/25 hover:bg-muted/40",
-                )}
-              >
-                {b === "tbc" ? "TBC" : "BoG"}
-              </button>
+                onChange={(v) =>
+                  patch({
+                    declineBins: { ...s.declineBins, [bin]: v },
+                  })
+                }
+              />
             ))}
           </div>
           <RippleButton

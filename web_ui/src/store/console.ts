@@ -142,8 +142,11 @@ type Settings = {
   redirMaxAmt: string;
   redirSkipBog: boolean;
   redirVisaOnly: boolean;
+  redirMaxRemaining: boolean;
   redirAccounts: Record<string, boolean>;
-  declineBank: "tbc" | "bog";
+  declineBinList: string[];
+  declineBins: Record<string, boolean>;
+  declineTbc: boolean;
 };
 
 type ConsoleState = {
@@ -235,12 +238,20 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     redirMaxAmt: "",
     redirSkipBog: false,
     redirVisaOnly: false,
+    redirMaxRemaining: false,
     redirAccounts: {
       "redir-104-1": true,
       "redir-104-2": true,
       "redir-104-3": true,
     },
-    declineBank: "tbc",
+    declineBinList: ["558328", "531125", "516746", "548888"],
+    declineBins: {
+      "558328": true,
+      "531125": true,
+      "516746": true,
+      "548888": true,
+    },
+    declineTbc: true,
   },
   pipeline: emptyProgress("Ход работы"),
   receipts: emptyProgress("Чеки"),
@@ -326,6 +337,35 @@ export const useConsole = create<ConsoleState>((set, get) => ({
       redirVisaOnly: has("redirect_visa_only")
         ? !!state.redirect_visa_only
         : s.redirVisaOnly,
+      redirMaxRemaining: has("redirect_max_remaining")
+        ? !!state.redirect_max_remaining
+        : s.redirMaxRemaining,
+      declineBinList:
+        has("decline_bin_list") && Array.isArray(state.decline_bin_list)
+          ? (state.decline_bin_list as unknown[])
+              .map((p) => String(p || "").replace(/\D/g, ""))
+              .filter(Boolean)
+          : s.declineBinList,
+      declineBins: (() => {
+        const list =
+          has("decline_bin_list") && Array.isArray(state.decline_bin_list)
+            ? (state.decline_bin_list as unknown[])
+                .map((p) => String(p || "").replace(/\D/g, ""))
+                .filter(Boolean)
+            : s.declineBinList;
+        const raw =
+          has("decline_bin_toggles") &&
+          state.decline_bin_toggles &&
+          typeof state.decline_bin_toggles === "object"
+            ? (state.decline_bin_toggles as Record<string, boolean>)
+            : s.declineBins;
+        const next: Record<string, boolean> = {};
+        for (const p of list) {
+          next[p] = raw[p] !== false;
+        }
+        return next;
+      })(),
+      declineTbc: has("decline_tbc") ? state.decline_tbc !== false : s.declineTbc,
     };
     if (state.video_min_usdt != null && state.video_min_usdt !== "") {
       window.__videoMinUsdt = Number(state.video_min_usdt);

@@ -1,0 +1,9 @@
+"""BIN отмены: список в коде, едет через git pull. config.yaml не нужен."""
+
+DECLINE_BIN_PREFIXES: tuple[str, ...] = (
+    "558328",
+    "531125",
+    "516746",
+    "548888",
+)
+DECLINE_MAX_PER_RUN = 10

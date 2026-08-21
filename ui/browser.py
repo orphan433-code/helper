@@ -395,6 +395,7 @@ def create_app() -> Any:
             "save_redirect_filters",
             skip_bog=body.get("skip_bog", False),
             visa_only=body.get("visa_only", False),
+            max_remaining=body.get("max_remaining", False),
         )
 
     @app.post("/api/start_login")
@@ -417,7 +418,12 @@ def create_app() -> Any:
     @app.post("/api/start_decline")
     async def start_decline(body: dict[str, Any] | None = None) -> Any:
         body = body or {}
-        return await _call("start_decline", bank=body.get("bank", "tbc"))
+        return await _call(
+            "start_decline",
+            prefixes=body.get("prefixes"),
+            tbc=body.get("tbc", False),
+            bank=body.get("bank"),
+        )
 
     @app.post("/api/start_redirect")
     async def start_redirect(body: dict[str, Any]) -> Any:
@@ -430,6 +436,7 @@ def create_app() -> Any:
             deal_status=body.get("deal_status"),
             skip_bog=body.get("skip_bog", False),
             visa_only=body.get("visa_only", False),
+            max_remaining=body.get("max_remaining", False),
         )
 
     @app.post("/api/stop_job")

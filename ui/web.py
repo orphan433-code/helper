@@ -38,7 +38,11 @@ from ui.progress import (
 from ui.settings import (
     apply_gui_settings,
     apply_redirect_filters,
+    apply_decline_bin_filters,
+    decline_bin_settings,
+    decline_tbc_enabled,
     redirect_filter_settings,
+    DECLINE_BIN_PREFIXES,
 )
 from ui.job_control import begin_job, request_stop
 from pipeline.runner import run_login, run_pipeline
@@ -281,6 +285,7 @@ class TzkApi:
         pipe = cfg.get("pipeline") or {}
         val = cfg.get("validation") or {}
         redir = redirect_filter_settings()
+        bins = decline_bin_settings()
         adb_text, adb_ok = _adb_status_text()
         serial = bank_settings(cfg).get("adb_serial") or ""
         return {
@@ -293,6 +298,10 @@ class TzkApi:
             "from_pending": bool(pipe.get("from_pending", False)),
             "redirect_skip_bog": bool(redir.get("skip_bog", False)),
             "redirect_visa_only": bool(redir.get("visa_only", False)),
+            "redirect_max_remaining": bool(redir.get("max_remaining", False)),
+            "decline_bin_list": list(DECLINE_BIN_PREFIXES),
+            "decline_bin_toggles": bins,
+            "decline_tbc": decline_tbc_enabled(),
             "screens_dir": str(proofs_dir(cfg)),
             "videos_dir": str(videos_dir(cfg)),
             "video_min_usdt": float(
@@ -372,6 +381,7 @@ class TzkApi:
         self,
         skip_bog: bool = False,
         visa_only: bool = False,
+        max_remaining: bool = False,
     ) -> dict[str, Any]:
         """Сохранить фильтры редиректа в platcore-decline/config.yaml."""
         try:
@@ -379,12 +389,15 @@ class TzkApi:
             saved = apply_redirect_filters(
                 skip_bog=bool(skip_bog),
                 visa_only=bool(visa_only),
+                max_remaining=bool(max_remaining),
             )
             parts = []
             if saved.get("skip_bog"):
                 parts.append("пропуск BoG")
             if saved.get("visa_only"):
                 parts.append("только Visa")
+            if saved.get("max_remaining"):
+                parts.append("остаток < 4ч")
             hint = ", ".join(parts) if parts else "выключены"
             return self._ok(message=f"[OK] Фильтры редиректа: {hint}\n")
         except Exception as exc:
@@ -447,10 +460,52 @@ class TzkApi:
         self._start_worker(run_pipeline, "pipeline")
         return self._ok()
 
-    def start_decline(self, bank: str | None = None) -> dict[str, Any]:
+    def start_decline(
+        self,
+        prefixes: list[str] | str | None = None,
+        tbc: bool = False,
+        bank: str | list[str] | None = None,
+    ) -> dict[str, Any]:
+        # pywebview: start_decline(["558328", …]) / start_decline(list, tbc)
+        if isinstance(prefixes, bool) and bank is None:
+            tbc = bool(prefixes)
+            prefixes = None
+        if isinstance(bank, (list, tuple)):
+            prefixes = list(bank)
+            bank = None
+        elif isinstance(bank, str) and bank.lower() in ("tbc", "bog") and not prefixes:
+            pass
+        if isinstance(prefixes, str) and prefixes.lower() in ("tbc", "bog"):
+            bank = prefixes
+            prefixes = None
+        if isinstance(prefixes, str):
+            raw_pref: list[Any] = prefixes.split(",")
+        elif isinstance(prefixes, (list, tuple)):
+            raw_pref = list(prefixes)
+        else:
+            raw_pref = []
+        wanted = {
+            "".join(ch for ch in str(x) if ch.isdigit())
+            for x in raw_pref
+            if str(x).strip()
+        }
+        bins = [p for p in DECLINE_BIN_PREFIXES if p in wanted]
+        include_tbc = bool(tbc)
+        if not bins and not include_tbc:
+            if bank:
+                return self._start_decline_or_redirect(
+                    redirect=False,
+                    decline_bank=str(bank or "tbc"),
+                )
+            return self._err("Включи TBC или хотя бы один BIN")
+        try:
+            apply_decline_bin_filters(prefixes=bins, tbc=include_tbc)
+        except Exception:
+            pass
         return self._start_decline_or_redirect(
             redirect=False,
-            decline_bank=str(bank or "tbc"),
+            decline_prefixes=bins,
+            decline_tbc=include_tbc,
         )
 
     def start_redirect(
@@ -462,12 +517,14 @@ class TzkApi:
         deal_status: str | None = None,
         skip_bog: bool = False,
         visa_only: bool = False,
+        max_remaining: bool = False,
     ) -> dict[str, Any]:
         """Редирект сделок: сумма + лимит, выбранные traderId равномерно.
 
         deal_status: new (по умолчанию) или pending.
         По умолчанию все подряд. skip_bog=True — не редиректить BOG/548888….
         visa_only=True — только карты Visa (4…).
+        max_remaining=True — только Time remaining < 4ч (expiredAt).
         """
         # list[str] или comma-string (старый React join) — не итерировать str по символам
         if isinstance(trader_ids, str):
@@ -498,6 +555,7 @@ class TzkApi:
             apply_redirect_filters(
                 skip_bog=bool(skip_bog),
                 visa_only=bool(visa_only),
+                max_remaining=bool(max_remaining),
             )
         except Exception:
             pass
@@ -510,6 +568,7 @@ class TzkApi:
             deal_status=status,
             skip_bog=bool(skip_bog),
             visa_only=bool(visa_only),
+            max_remaining=bool(max_remaining),
         )
 
     def _start_decline_or_redirect(
@@ -522,8 +581,11 @@ class TzkApi:
         max_amount: float | None = None,
         deal_status: str = "new",
         decline_bank: str = "tbc",
+        decline_prefixes: list[str] | None = None,
+        decline_tbc: bool = False,
         skip_bog: bool = False,
         visa_only: bool = False,
+        max_remaining: bool = False,
     ) -> dict[str, Any]:
         if self._running:
             return self._err("Уже выполняется")
@@ -542,6 +604,12 @@ class TzkApi:
         bank_key = str(decline_bank or "tbc").strip().lower() or "tbc"
         if bank_key not in ("tbc", "bog"):
             bank_key = "tbc"
+        prefixes = [
+            "".join(ch for ch in str(p) if ch.isdigit())
+            for p in (decline_prefixes or [])
+            if str(p).strip()
+        ]
+        prefixes = [p for p in prefixes if p in DECLINE_BIN_PREFIXES]
         if redirect:
             status_word = "pending" if deal_status == "pending" else "new"
             filter_bits = []
@@ -549,6 +617,8 @@ class TzkApi:
                 filter_bits.append("пропуск BOG/548888")
             if visa_only:
                 filter_bits.append("только Visa")
+            if max_remaining:
+                filter_bits.append("остаток < 4ч")
             filter_note = ", ".join(filter_bits) if filter_bits else "все подряд"
             self._status = f"Редирект {status_word}-сделок…"
             self._push_log(
@@ -558,17 +628,31 @@ class TzkApi:
                 status="section",
             )
         else:
-            bank_word = (
-                "Bank of Georgia / 548888"
-                if bank_key == "bog"
-                else "TBC / 4315"
-            )
-            self._status = f"Отменяю сделки ({bank_word})…"
-            self._push_log(
-                f"Отмена по банку: {bank_word} ({bank_key})",
-                service="decline",
-                status="section",
-            )
+            if prefixes or decline_tbc:
+                parts = []
+                if decline_tbc:
+                    parts.append("TBC")
+                if prefixes:
+                    parts.append(", ".join(prefixes))
+                bank_word = " + ".join(parts)
+                self._status = f"Отменяю сделки ({bank_word}, до 10)…"
+                self._push_log(
+                    f"Отмена: {bank_word} · сорт по remaining · первые 10",
+                    service="decline",
+                    status="section",
+                )
+            else:
+                bank_word = (
+                    "Bank of Georgia / 548888"
+                    if bank_key == "bog"
+                    else "TBC / 4315"
+                )
+                self._status = f"Отменяю сделки ({bank_word})…"
+                self._push_log(
+                    f"Отмена по банку: {bank_word} ({bank_key})",
+                    service="decline",
+                    status="section",
+                )
         self._set_running(True, mode)
         self._worker = threading.Thread(
             target=self._run_decline_thread,
@@ -580,8 +664,11 @@ class TzkApi:
                 "max_amount": max_amount,
                 "deal_status": deal_status,
                 "decline_bank": bank_key,
+                "decline_prefixes": prefixes,
+                "decline_tbc": bool(decline_tbc),
                 "skip_bog": skip_bog,
                 "visa_only": visa_only,
+                "max_remaining": max_remaining,
             },
             name=f"tzk-{mode}",
             daemon=True,
@@ -1004,8 +1091,11 @@ class TzkApi:
         max_amount: float | None = None,
         deal_status: str = "new",
         decline_bank: str = "tbc",
+        decline_prefixes: list[str] | None = None,
+        decline_tbc: bool = False,
         skip_bog: bool = False,
         visa_only: bool = False,
+        max_remaining: bool = False,
     ) -> None:
         begin_job()
         saw_ui_result = False
@@ -1029,11 +1119,26 @@ class TzkApi:
                 cmd.append("--skip-bog")
             if visa_only:
                 cmd.append("--visa-only")
+            if max_remaining:
+                cmd.append("--max-remaining")
         else:
-            bank = str(decline_bank or "tbc").strip().lower() or "tbc"
-            if bank not in ("tbc", "bog"):
-                bank = "tbc"
-            cmd.extend(["--bank", bank])
+            prefixes = [
+                "".join(ch for ch in str(p) if ch.isdigit())
+                for p in (decline_prefixes or [])
+                if str(p).strip()
+            ]
+            prefixes = [p for p in prefixes if p in DECLINE_BIN_PREFIXES]
+            if prefixes or decline_tbc:
+                for p in prefixes:
+                    cmd.extend(["--prefix", p])
+                if decline_tbc:
+                    cmd.append("--tbc")
+                cmd.extend(["--max-per-run", "10"])
+            else:
+                bank = str(decline_bank or "tbc").strip().lower() or "tbc"
+                if bank not in ("tbc", "bog"):
+                    bank = "tbc"
+                cmd.extend(["--bank", bank])
         cmd.append("--execute")
         try:
             self._notify_ui("clearDeclineResult();")

@@ -21,6 +21,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -29,6 +30,10 @@ import yaml
 from playwright.async_api import async_playwright
 
 ROOT = Path(__file__).resolve().parent
+_REPO = ROOT.parent
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+from core.decline_bins import DECLINE_BIN_PREFIXES, DECLINE_MAX_PER_RUN
 
 _DEFAULT_TOKEN_KEYS = (
     "token",
@@ -75,7 +80,9 @@ def _decline_patterns(cfg: dict) -> list[str]:
     return [str(p).strip().lower() for p in raw if str(p).strip()]
 
 
-# Пресеты банков для отмены (UI: TBC / Bank of Georgia)
+# BIN для отмены — core/decline_bins.py (git pull). Не config.yaml.
+
+# Пресеты банков для отмены (CLI: --bank tbc|bog)
 _BANK_PRESETS: dict[str, dict[str, Any]] = {
     "tbc": {
         "label": "TBC",
@@ -178,6 +185,16 @@ def bank_matches(name: str | None, patterns: list[str]) -> bool:
     return any(p in low for p in patterns)
 
 
+def _digits_only(raw: str | None) -> str:
+    return "".join(ch for ch in str(raw or "") if ch.isdigit())
+
+
+def normalize_bin_prefixes(raw: list[str] | tuple[str, ...] | None) -> list[str]:
+    """Только известные BIN отмены, без дублей, порядок как в DECLINE_BIN_PREFIXES."""
+    wanted = {_digits_only(p) for p in (raw or []) if str(p).strip()}
+    return [p for p in DECLINE_BIN_PREFIXES if p in wanted]
+
+
 def card_prefix_matches(digits: str, prefixes: list[str]) -> bool:
     if not digits or not prefixes:
         return False
@@ -219,6 +236,70 @@ def _redirect_skip_rules(cfg: dict) -> tuple[list[str], list[str]]:
 def should_skip_redirect(row: dict[str, Any], cfg: dict) -> bool:
     prefixes, patterns = _redirect_skip_rules(cfg)
     return deal_matches_bank(row, patterns=patterns, card_prefixes=prefixes)
+
+
+def _parse_expired_at(row: dict[str, Any]) -> datetime | None:
+    """Дедлайн сделки из findNew.expiredAt (ISO, обычно …Z)."""
+    raw = row.get("expiredAt")
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def deal_remaining_seconds(
+    row: dict[str, Any], *, now: datetime | None = None
+) -> float | None:
+    """Секунды до expiredAt — то же, что UI «Time remaining»."""
+    expired = _parse_expired_at(row)
+    if expired is None:
+        return None
+    stamp = now or datetime.now(timezone.utc)
+    return (expired - stamp).total_seconds()
+
+
+def remaining_under_hours(
+    row: dict[str, Any],
+    hours: float,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """True если 0 < остаток < hours. Нет expiredAt / уже истекло — False."""
+    if hours <= 0:
+        return True
+    left = deal_remaining_seconds(row, now=now)
+    if left is None:
+        return False
+    return 0 < left < hours * 3600.0
+
+
+def _fmt_remaining(seconds: float | None) -> str:
+    if seconds is None:
+        return "?"
+    if seconds <= 0:
+        return "00:00:00"
+    total = int(seconds)
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def _remaining_sort_key(row: dict[str, Any]) -> tuple[int, float]:
+    """Меньше остаток — раньше. Без expiredAt / уже истекло — в конец."""
+    left = deal_remaining_seconds(row)
+    if left is None:
+        return (2, 0.0)
+    if left <= 0:
+        return (1, 0.0)
+    return (0, left)
 
 
 def _strip_bearer(raw: str) -> str:
@@ -528,8 +609,9 @@ def _deal_summary(row: dict[str, Any]) -> str:
     bank = recipient_bank_name(row) or "—"
     owner = (row.get("credentials") or {}).get("ownerName") or ""
     card = (row.get("credentials") or {}).get("accountNumber") or ""
+    left = _fmt_remaining(deal_remaining_seconds(row))
     return (
-        f"orderId={order_id} amount={amount} bank={bank!r} "
+        f"orderId={order_id} amount={amount} left={left} bank={bank!r} "
         f"owner={owner!r} card=…{str(card)[-4:] if card else '?'}"
     )
 
@@ -567,10 +649,33 @@ async def run(args: argparse.Namespace) -> int:
     max_per_run = 0
     min_amt: float | None = None
     max_amt: float | None = None
+    raw_prefixes = getattr(args, "prefixes", None)
+    bin_prefixes = normalize_bin_prefixes(raw_prefixes)
+    if raw_prefixes and not bin_prefixes:
+        raise SystemExit(
+            "Неизвестный BIN. Доступны: " + ", ".join(DECLINE_BIN_PREFIXES)
+        )
+    include_tbc = bool(getattr(args, "tbc", False))
     bank_preset = _normalize_bank_preset(getattr(args, "bank", None))
-    patterns, card_prefixes, bank_label = _decline_match_rules(
-        cfg, bank_preset=bank_preset
-    )
+    ui_filter = bool(bin_prefixes) or include_tbc
+    if ui_filter:
+        patterns: list[str] = []
+        card_prefixes = list(bin_prefixes)
+        labels = list(bin_prefixes)
+        if include_tbc:
+            tbc_pats, tbc_prefs, _ = _decline_match_rules(
+                cfg, bank_preset="tbc"
+            )
+            patterns = list(tbc_pats)
+            for p in tbc_prefs:
+                if p not in card_prefixes:
+                    card_prefixes.append(p)
+            labels = ["TBC"] + labels
+        bank_label = ", ".join(labels) if labels else "TBC"
+    else:
+        patterns, card_prefixes, bank_label = _decline_match_rules(
+            cfg, bank_preset=bank_preset
+        )
     skip_prefixes, skip_bank_patterns = _redirect_skip_rules(cfg)
     red = _redirect_cfg(cfg) if do_redirect else {}
     # CLI --skip-bog / --visa-only включают; иначе берём из config
@@ -588,6 +693,22 @@ async def run(args: argparse.Namespace) -> int:
             or bool(red.get("visa_only", False))
         )
     )
+    max_remaining = bool(
+        do_redirect
+        and (
+            getattr(args, "max_remaining", False)
+            or bool(red.get("max_remaining", False))
+        )
+    )
+    hours_raw = getattr(args, "max_remaining_hours", None)
+    if hours_raw is None:
+        hours_raw = red.get("max_remaining_hours", 4)
+    try:
+        max_remaining_hours = float(hours_raw) if hours_raw is not None else 4.0
+    except (TypeError, ValueError):
+        max_remaining_hours = 4.0
+    if max_remaining_hours <= 0:
+        max_remaining = False
 
     if do_redirect:
         traders = _resolve_active_traders(
@@ -612,6 +733,17 @@ async def run(args: argparse.Namespace) -> int:
         )
         min_amt = float(min_raw) if min_raw is not None else None
         max_amt = float(max_raw) if max_raw is not None else None
+    elif ui_filter:
+        decline_cfg = cfg.get("bank_decline") or {}
+        raw_limit = getattr(args, "max_per_run", None)
+        if raw_limit is None:
+            raw_limit = decline_cfg.get("max_per_run", DECLINE_MAX_PER_RUN)
+        try:
+            max_per_run = int(raw_limit)
+        except (TypeError, ValueError):
+            max_per_run = DECLINE_MAX_PER_RUN
+        if max_per_run <= 0:
+            max_per_run = DECLINE_MAX_PER_RUN
 
     if args.debug_token:
         await debug_storage_keys(cfg, base_url)
@@ -640,6 +772,11 @@ async def run(args: argparse.Namespace) -> int:
             print("[INFO] Фильтр BOG выключен — все подряд")
         if visa_only:
             print("[INFO] Только Visa (карты 4…)")
+        if max_remaining:
+            print(
+                f"[INFO] Только Time remaining < {max_remaining_hours:g} ч "
+                f"(expiredAt − now)"
+            )
         print(f"[INFO] Аккаунты (равномерно): {labels}")
     else:
         bits = []
@@ -648,6 +785,11 @@ async def run(args: argparse.Namespace) -> int:
         if card_prefixes:
             bits.append(f"BIN {', '.join(p + '*' for p in card_prefixes)}")
         print(f"[INFO] Фильтр отмены ({bank_label}): {'; '.join(bits) or '—'}")
+        if ui_filter:
+            print(
+                f"[INFO] Сортировка: остаток времени по возрастанию, "
+                f"берём первые {max_per_run}"
+            )
     mode_label = "РЕДИРЕКТ" if do_redirect else "ОТМЕНА"
     print(f"[INFO] Режим: {mode_label}{' (execute)' if args.execute else ' dry-run'}\n")
 
@@ -690,6 +832,7 @@ async def run(args: argparse.Namespace) -> int:
     candidates: list[dict[str, Any]] = []
     skipped_bog = 0
     skipped_non_visa = 0
+    skipped_remaining = 0
     for row in rows:
         if do_redirect:
             if skip_bog and should_skip_redirect(row, cfg):
@@ -697,6 +840,11 @@ async def run(args: argparse.Namespace) -> int:
                 continue
             if visa_only and not is_visa_card(row):
                 skipped_non_visa += 1
+                continue
+            if max_remaining and not remaining_under_hours(
+                row, max_remaining_hours
+            ):
+                skipped_remaining += 1
                 continue
             if not _amount_in_range(
                 _deal_amount(row), min_amount=min_amt, max_amount=max_amt
@@ -715,8 +863,20 @@ async def run(args: argparse.Namespace) -> int:
         )
     if do_redirect and skipped_non_visa:
         print(f"[INFO] Пропущено (не Visa): {skipped_non_visa}")
+    if do_redirect and skipped_remaining:
+        print(
+            f"[INFO] Пропущено (остаток ≥ {max_remaining_hours:g} ч "
+            f"или нет expiredAt): {skipped_remaining}"
+        )
 
-    if do_redirect and max_per_run > 0:
+    if (not do_redirect) and ui_filter:
+        candidates.sort(key=_remaining_sort_key)
+        if max_per_run > 0:
+            candidates = candidates[:max_per_run]
+        print(
+            f"[INFO] После фильтра/сортировки к отмене: {len(candidates)}"
+        )
+    elif do_redirect and max_per_run > 0:
         candidates = candidates[:max_per_run]
 
     if not candidates:
@@ -860,10 +1020,38 @@ def main() -> None:
         help="при --redirect: только Visa (номер начинается с 4)",
     )
     parser.add_argument(
+        "--max-remaining",
+        action="store_true",
+        help="при --redirect: только сделки с Time remaining меньше порога",
+    )
+    parser.add_argument(
+        "--max-remaining-hours",
+        type=float,
+        default=None,
+        help="порог часов для --max-remaining (по умолчанию 4)",
+    )
+    parser.add_argument(
+        "--tbc",
+        action="store_true",
+        help="в отмену: TBC (имя TBC / карты 4315…) вместе с --prefix",
+    )
+    parser.add_argument(
+        "--prefix",
+        action="append",
+        dest="prefixes",
+        default=None,
+        metavar="BIN",
+        help=(
+            "BIN карты для отмены (можно несколько раз): "
+            "558328 / 531125 / 516746 / 548888. "
+            "Только эти реки, сортировка по остатку времени, первые 10."
+        ),
+    )
+    parser.add_argument(
         "--bank",
         choices=("tbc", "bog"),
         default="tbc",
-        help="для отмены: tbc (имя TBC / карты 4315…) или bog (Bank of Georgia / 548888…)",
+        help="legacy отмена: tbc (имя TBC / карты 4315…) или bog (Bank of Georgia / 548888…)",
     )
     parser.add_argument(
         "--deal-status",

@@ -88,11 +88,20 @@ async def run_pipeline() -> None:
     try:
         raise_if_stopped()
         from_pending = bool(pipe_cfg.get("from_pending", False))
+        api_flow = cfg.get("api_flow") or {}
+        api_enabled = bool(api_flow.get("enabled", False))
         set_automation_phase("bank")
         enter_background()
         if from_pending:
             info("Режим: pending → Approve → банк → чеки (без Accept)")
             accepted_deals, page_by_order = await claim_pending_deals_loop(
+                session.context, cfg
+            )
+        elif api_enabled:
+            from platcore.api_accept import accept_deals_loop_api
+
+            info("Режим: API Accept (клик-флоу не трогаем)")
+            accepted_deals, page_by_order = await accept_deals_loop_api(
                 session.context, cfg
             )
         else:
@@ -103,6 +112,9 @@ async def run_pipeline() -> None:
         run_completion = comp_cfg.get("enabled", True) and pipe_cfg.get(
             "run_completion_after_batch", True
         )
+        if api_enabled and not api_flow.get("run_completion"):
+            run_completion = False
+            info("API-флоу: закрытие не трогаем — сверка руками")
         if run_completion and accepted_deals:
             raise_if_stopped()
             set_automation_phase("completion")

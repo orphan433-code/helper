@@ -16,6 +16,7 @@ type Api = {
   save_redirect_filters: (
     skip_bog: boolean,
     visa_only: boolean,
+    max_remaining: boolean,
   ) => Promise<Record<string, unknown>>;
   start_pipeline: (
     max_deals: number,
@@ -38,7 +39,10 @@ type Api = {
   recovery_exit: () => Promise<Record<string, unknown>>;
   open_videos_folder: () => Promise<Record<string, unknown>>;
   open_screens_folder: () => Promise<Record<string, unknown>>;
-  start_decline: (bank: string) => Promise<Record<string, unknown>>;
+  start_decline: (
+    prefixes: string[],
+    tbc?: boolean,
+  ) => Promise<Record<string, unknown>>;
   start_redirect: (
     trader_ids: string[],
     max_per_run: number,
@@ -47,6 +51,7 @@ type Api = {
     deal_status: string,
     skip_bog: boolean,
     visa_only: boolean,
+    max_remaining: boolean,
   ) => Promise<Record<string, unknown>>;
 };
 

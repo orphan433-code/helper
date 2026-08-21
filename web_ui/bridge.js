@@ -55,10 +55,11 @@
           max_empty_list_passes,
           from_pending: !!from_pending,
         }),
-      save_redirect_filters: (skip_bog, visa_only) =>
+      save_redirect_filters: (skip_bog, visa_only, max_remaining) =>
         apiPost("/api/save_redirect_filters", {
           skip_bog: !!skip_bog,
           visa_only: !!visa_only,
+          max_remaining: !!max_remaining,
         }),
       start_pipeline: (
         max_deals,
@@ -93,8 +94,11 @@
       recovery_exit: () => apiPost("/api/recovery_exit"),
       open_videos_folder: () => apiPost("/api/open_videos_folder"),
       open_screens_folder: () => apiPost("/api/open_screens_folder"),
-      start_decline: (bank) =>
-        apiPost("/api/start_decline", { bank: bank || "tbc" }),
+      start_decline: (prefixes, tbc) =>
+        apiPost("/api/start_decline", {
+          prefixes: Array.isArray(prefixes) ? prefixes : [],
+          tbc: !!tbc,
+        }),
       start_redirect: (
         trader_ids,
         max_per_run,
@@ -102,7 +106,8 @@
         max_amount,
         deal_status,
         skip_bog,
-        visa_only
+        visa_only,
+        max_remaining
       ) =>
         apiPost("/api/start_redirect", {
           trader_ids,
@@ -112,6 +117,7 @@
           deal_status: deal_status || "new",
           skip_bog: !!skip_bog,
           visa_only: !!visa_only,
+          max_remaining: !!max_remaining,
         }),
     },
   };
