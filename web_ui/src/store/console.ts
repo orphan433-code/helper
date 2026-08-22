@@ -26,13 +26,14 @@ function emptyProgress(title: string): ProgressPanel {
 /** Панель «идёт работа» для редиректа / снятия — пока бэкенд не прислал итог. */
 function busyDeclinePanel(jobMode: string): ProgressPanel {
   const isRedirect = jobMode === "redirect";
+  const isAccept = jobMode === "accept_names";
   return {
     visible: true,
     processing: true,
     done: false,
-    title: isRedirect ? "Редирект" : "Отмена",
+    title: isRedirect ? "Редирект" : isAccept ? "Принятие" : "Отмена",
     summary: "…",
-    message: isRedirect ? "Передаю…" : "Отменяю…",
+    message: isRedirect ? "Передаю…" : isAccept ? "Принимаю…" : "Отменяю…",
     deals: [],
     progress: undefined,
     phase: "processing",
@@ -144,9 +145,17 @@ type Settings = {
   redirVisaOnly: boolean;
   redirMaxRemaining: boolean;
   redirAccounts: Record<string, boolean>;
+  redirectBinList: string[];
+  redirectBins: Record<string, boolean>;
   declineBinList: string[];
   declineBins: Record<string, boolean>;
   declineTbc: boolean;
+  declineMax: string;
+  declineMinAmt: string;
+  declineMaxAmt: string;
+  acceptNamesMax: string;
+  acceptNamesMinAmt: string;
+  acceptNamesMaxAmt: string;
 };
 
 type ConsoleState = {
@@ -244,6 +253,11 @@ export const useConsole = create<ConsoleState>((set, get) => ({
       "redir-104-2": true,
       "redir-104-3": true,
     },
+    redirectBinList: ["537524", "557755"],
+    redirectBins: {
+      "537524": false,
+      "557755": false,
+    },
     declineBinList: ["558328", "531125", "516746", "548888"],
     declineBins: {
       "558328": true,
@@ -252,6 +266,12 @@ export const useConsole = create<ConsoleState>((set, get) => ({
       "548888": true,
     },
     declineTbc: true,
+    declineMax: "10",
+    declineMinAmt: "",
+    declineMaxAmt: "",
+    acceptNamesMax: "5",
+    acceptNamesMinAmt: "",
+    acceptNamesMaxAmt: "",
   },
   pipeline: emptyProgress("Ход работы"),
   receipts: emptyProgress("Чеки"),
@@ -295,7 +315,7 @@ export const useConsole = create<ConsoleState>((set, get) => ({
       jobMode: mode,
       waitingConfirm: running ? get().waitingConfirm : false,
     };
-    if (running && (mode === "redirect" || mode === "decline")) {
+    if (running && (mode === "redirect" || mode === "decline" || mode === "accept_names")) {
       patch.decline = busyDeclinePanel(mode);
       patch.declineResultOpen = false;
       patch.statusKind = "running";
@@ -340,6 +360,36 @@ export const useConsole = create<ConsoleState>((set, get) => ({
       redirMaxRemaining: has("redirect_max_remaining")
         ? !!state.redirect_max_remaining
         : s.redirMaxRemaining,
+      redirectBinList:
+        has("redirect_bin_list") && Array.isArray(state.redirect_bin_list)
+          ? (state.redirect_bin_list as string[]).map(String)
+          : s.redirectBinList,
+      redirectBins: (() => {
+        const list =
+          has("redirect_bin_list") && Array.isArray(state.redirect_bin_list)
+            ? (state.redirect_bin_list as string[]).map(String)
+            : s.redirectBinList;
+        const raw =
+          has("redirect_bin_toggles") &&
+          state.redirect_bin_toggles &&
+          typeof state.redirect_bin_toggles === "object"
+            ? (state.redirect_bin_toggles as Record<string, boolean>)
+            : s.redirectBins;
+        const next: Record<string, boolean> = {};
+        for (const p of list) {
+          next[p] = raw[p] === true;
+        }
+        return next;
+      })(),
+      redirMax: has("redirect_max_per_run")
+        ? String(state.redirect_max_per_run ?? s.redirMax)
+        : s.redirMax,
+      redirMin: has("redirect_min_amount")
+        ? String(state.redirect_min_amount ?? "")
+        : s.redirMin,
+      redirMaxAmt: has("redirect_max_amount")
+        ? String(state.redirect_max_amount ?? "")
+        : s.redirMaxAmt,
       declineBinList:
         has("decline_bin_list") && Array.isArray(state.decline_bin_list)
           ? (state.decline_bin_list as unknown[])
@@ -366,6 +416,15 @@ export const useConsole = create<ConsoleState>((set, get) => ({
         return next;
       })(),
       declineTbc: has("decline_tbc") ? state.decline_tbc !== false : s.declineTbc,
+      declineMax: has("decline_max_per_run")
+        ? String(state.decline_max_per_run ?? s.declineMax)
+        : s.declineMax,
+      declineMinAmt: has("decline_min_amount")
+        ? String(state.decline_min_amount ?? "")
+        : s.declineMinAmt,
+      declineMaxAmt: has("decline_max_amount")
+        ? String(state.decline_max_amount ?? "")
+        : s.declineMaxAmt,
     };
     if (state.video_min_usdt != null && state.video_min_usdt !== "") {
       window.__videoMinUsdt = Number(state.video_min_usdt);
@@ -421,7 +480,9 @@ export const useConsole = create<ConsoleState>((set, get) => ({
       // После перезагрузки UI — если редирект/снятие ещё идут, показать busy-панель
       if (
         running &&
-        (jobMode === "redirect" || jobMode === "decline") &&
+        (jobMode === "redirect" ||
+          jobMode === "decline" ||
+          jobMode === "accept_names") &&
         !get().decline.processing
       ) {
         patch.decline = busyDeclinePanel(jobMode);
@@ -594,9 +655,15 @@ export const useConsole = create<ConsoleState>((set, get) => ({
   },
 
   updateDeclineResult: (payload) => {
-    const isRedirect = String(payload.action || "cancel") === "redirect";
+    const action = String(payload.action || "cancel");
+    const isRedirect = action === "redirect";
+    const isAccept = action === "accept";
     const doneCount = Number(
-      isRedirect ? payload.redirected || 0 : payload.cancelled || 0,
+      isRedirect
+        ? payload.redirected || 0
+        : isAccept
+          ? payload.accepted || 0
+          : payload.cancelled || 0,
     );
     const failed = Number(payload.failed || 0);
     const total = Number(payload.total || (payload.deals as unknown[])?.length || 0);
@@ -604,7 +671,9 @@ export const useConsole = create<ConsoleState>((set, get) => ({
       String(payload.message || "") ||
       (isRedirect
         ? `Передано ${doneCount} из ${total}`
-        : `Отменено ${doneCount} из ${total}`);
+        : isAccept
+          ? `Принято ${doneCount} из ${total}`
+          : `Отменено ${doneCount} из ${total}`);
     const hasErrors = failed > 0 || (doneCount === 0 && total > 0);
 
     set({
@@ -629,7 +698,7 @@ export const useConsole = create<ConsoleState>((set, get) => ({
   clearDeclineResult: () => {
     const { running, jobMode } = get();
     // Поток редиректа/снятия зовёт clear в начале — не прячем панель, а показываем «идёт…»
-    if (running && (jobMode === "redirect" || jobMode === "decline")) {
+    if (running && (jobMode === "redirect" || jobMode === "decline" || jobMode === "accept_names")) {
       set({ decline: busyDeclinePanel(jobMode), declineResultOpen: false });
       return;
     }

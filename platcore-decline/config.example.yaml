@@ -8,16 +8,13 @@ dashboard:
 
 browser:
   # Папка Chromium с уже залогиненным PlatCore (тот же профиль, что для входа).
-  # Соседний CNY: ../../CNY/browser_profile
-  # Или свой путь абсолютный / относительно этой папки.
   user_data_dir: ../../CNY/browser_profile
   headless: true
 
 bank_decline:
   api_base_url: ""
   default_bank: tbc
-  # Список BIN отмены в коде: core/decline_bins.py (едет через git pull).
-  # max_per_run / тумблеры — локально, коллегам config.yaml слать не надо.
+  # BIN отмены: core/decline_bins.py · фильтры UI: runtime/deals_ui.yaml (локально)
   patterns:
     - tbc
   presets:
@@ -31,22 +28,8 @@ bank_decline:
   find_new_type: buyAll
   find_new_limit: 50
 
-# Редирект: кому передавать сделки (label = кнопки в UI, id = UUID в PlatCore).
+# Редирект: traders — в shared config. Фильтры/BIN — в коде и runtime/deals_ui.yaml.
 bank_redirect:
-  max_per_run: 5
-  min_amount: null
-  max_amount: null
-  # Фильтры UI (сохраняются между сессиями)
-  skip_bog: false      # не редиректить Bank of Georgia / 548888…
-  visa_only: false     # только карты Visa (4…)
-  max_remaining: false # только сделки с Time remaining < max_remaining_hours
-  max_remaining_hours: 4
-  skip_card_prefixes:
-    - "548888"
-  skip_bank_patterns:
-    - "bank of georgia"
-    - georgia
-    - bog
   traders:
     - label: "104.1"
       id: "REPLACE_WITH_TRADER_UUID_1"

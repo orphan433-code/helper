@@ -63,16 +63,26 @@ async def run_login() -> None:
 
 async def run_pipeline() -> None:
     begin_job()
-    await close_before_new_run()
     cfg = load_config()
-    session = await launch_browser(cfg)
     pipe_cfg = cfg.get("pipeline") or {}
     comp_cfg = cfg.get("completion") or {}
+    api_flow = cfg.get("api_flow") or {}
+    api_enabled = bool(api_flow.get("enabled", False))
+    from_pending = bool(pipe_cfg.get("from_pending", False))
+    http_only = api_enabled and not from_pending
     exit_after_run = bool(pipe_cfg.get("exit_after_run", True))
 
+    session = None
+    await close_before_new_run()
+    if not http_only:
+        session = await launch_browser(cfg)
+
     section("Цикл tzk")
-    info(f"Профиль: {session.profile.name}")
-    if not exit_after_run:
+    if session is not None:
+        info(f"Профиль: {session.profile.name}")
+    else:
+        info("API Accept: HTTP, как редирект — окно не открываем")
+    if not exit_after_run and session is not None:
         info("При успехе браузер останется открытым (exit_after_run=false)")
 
     cancelled = False
@@ -87,11 +97,11 @@ async def run_pipeline() -> None:
     )
     try:
         raise_if_stopped()
-        from_pending = bool(pipe_cfg.get("from_pending", False))
-        api_flow = cfg.get("api_flow") or {}
-        api_enabled = bool(api_flow.get("enabled", False))
         set_automation_phase("bank")
-        enter_background()
+        if http_only:
+            enter_foreground()
+        else:
+            enter_background()
         if from_pending:
             info("Режим: pending → Approve → банк → чеки (без Accept)")
             accepted_deals, page_by_order = await claim_pending_deals_loop(
@@ -100,10 +110,16 @@ async def run_pipeline() -> None:
         elif api_enabled:
             from platcore.api_accept import accept_deals_loop_api
 
-            info("Режим: API Accept (клик-флоу не трогаем)")
-            accepted_deals, page_by_order = await accept_deals_loop_api(
-                session.context, cfg
+            info(
+                "Режим: API Accept"
+                + (" + банк" if api_flow.get("run_bank") else "")
+                + (
+                    " + PUT upload/approve"
+                    if api_flow.get("run_completion")
+                    else ""
+                )
             )
+            accepted_deals, page_by_order = await accept_deals_loop_api(cfg)
         else:
             accepted_deals, page_by_order = await accept_deals_loop(
                 session.context, cfg
@@ -122,7 +138,7 @@ async def run_pipeline() -> None:
             from completion.phase import run_completion_phase
 
             await run_completion_phase(
-                session.context,
+                session.context if session is not None else None,
                 cfg,
                 accepted_deals=accepted_deals,
                 page_by_order=page_by_order,
@@ -153,7 +169,9 @@ async def run_pipeline() -> None:
         enter_foreground()
         # Стоп / отмена / ошибка — всегда гасим браузер (критично для headless).
         # Успех с exit_after_run=false — оставляем сессию для следующего запуска.
-        if should_close_after_run(
+        if session is None:
+            pass
+        elif should_close_after_run(
             exit_after_run=exit_after_run,
             stopped=is_stopped() or stopped_by_user,
             cancelled=cancelled,

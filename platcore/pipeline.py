@@ -47,6 +47,7 @@ class AcceptedDeal:
     platcore_page: Page | None = None
     amount_usdt: float = 0.0
     bank_skipped: bool = False
+    ledger: dict | None = None
 
 
 def format_deal_brief(accepted: AcceptedDeal) -> str:
@@ -284,6 +285,89 @@ async def run_bank_for_deal(
     ok(f"Банк: перевод выполнен ({bank_ms:.0f} ms)")
 
 
+def _register_paid_from_accepted(accepted: AcceptedDeal) -> None:
+    try:
+        from notify.cancel import register_paid_deal
+
+        d = accepted.data or {}
+        digits = str(
+            (d.get("account") or {}).get("digits")
+            or accepted.deal.account_digits
+            or ""
+        )
+        inp = d.get("amount_input") or {}
+        amt = float(
+            inp.get("value")
+            if inp.get("value") is not None
+            else accepted.deal.amount_tjs
+            or 0
+        )
+        register_paid_deal(
+            index=accepted.index,
+            holder=str(d.get("holder_name") or accepted.deal.holder_name or ""),
+            card_digits=digits,
+            amount_tjs=amt,
+            order_id=accepted.order_id or "",
+        )
+    except Exception as reg_exc:
+        info(f"Учёт выплаты для отмен: {reg_exc}")
+
+
+async def pay_accepted_deal(
+    accepted: AcceptedDeal,
+    cfg: dict,
+    *,
+    progress: PipelineProgressTracker | None = None,
+) -> bool:
+    """PIN / форма / перевод. True если оплата ушла."""
+    while True:
+        try:
+            if progress is not None:
+                progress.mark_paying(accepted.index)
+            await run_bank_for_deal(
+                accepted.deal,
+                cfg,
+                platcore_page=accepted.platcore_page,
+            )
+            if progress is not None:
+                progress.mark_paid(accepted.index)
+            _register_paid_from_accepted(accepted)
+            return True
+        except JobStopped:
+            raise
+        except Exception as exc:
+            from core.recovery import is_post_payment_error
+
+            post_paid = is_post_payment_error(exc)
+            choice = await offer_recovery_choice(
+                exc,
+                stage="банк",
+                deal_index=accepted.index,
+                summary=deal_summary_from_accepted(accepted),
+                allow_retry=not post_paid,
+            )
+            if choice == "retry":
+                continue
+            if post_paid:
+                warn(
+                    f"Сделка #{accepted.index}: оплата была, "
+                    "«На главную» не нажалась — считаем оплаченной"
+                )
+                if progress is not None:
+                    progress.mark_paid(accepted.index)
+                _register_paid_from_accepted(accepted)
+                return True
+            warn(
+                f"Сделка #{accepted.index} пропущена — "
+                f"банк не выполнен, слот засчитан "
+                f"(остаётся в пуле чеков для отмены)"
+            )
+            accepted.bank_skipped = True
+            if progress is not None:
+                progress.mark_skipped(accepted.index, "Перевод не выполнен")
+            return False
+
+
 async def accept_deals_loop(
     context: BrowserContext, cfg: dict
 ) -> tuple[list[AcceptedDeal], dict[str, Page]]:
@@ -498,113 +582,11 @@ async def accept_deals_loop(
             picked = True
             progress.mark_accepted(accepted)
 
-            bank_ok = False
-            while True:
-                try:
-                    progress.mark_paying(accepted.index)
-                    await run_bank_for_deal(
-                        accepted.deal,
-                        cfg,
-                        platcore_page=accepted.platcore_page,
-                    )
-                    bank_ok = True
-                    progress.mark_paid(accepted.index)
-                    try:
-                        from notify.cancel import register_paid_deal
-
-                        d = accepted.data or {}
-                        digits = str(
-                            (d.get("account") or {}).get("digits")
-                            or accepted.deal.account_digits
-                            or ""
-                        )
-                        inp = d.get("amount_input") or {}
-                        amt = float(
-                            inp.get("value")
-                            if inp.get("value") is not None
-                            else accepted.deal.amount_tjs
-                            or 0
-                        )
-                        register_paid_deal(
-                            index=accepted.index,
-                            holder=str(
-                                d.get("holder_name")
-                                or accepted.deal.holder_name
-                                or ""
-                            ),
-                            card_digits=digits,
-                            amount_tjs=amt,
-                            order_id=accepted.order_id or "",
-                        )
-                    except Exception as reg_exc:
-                        info(f"Учёт выплаты для отмен: {reg_exc}")
-                    break
-                except JobStopped:
-                    raise
-                except Exception as exc:
-                    from core.recovery import is_post_payment_error
-
-                    post_paid = is_post_payment_error(exc)
-                    choice = await offer_recovery_choice(
-                        exc,
-                        stage="банк",
-                        deal_index=accepted.index,
-                        summary=deal_summary_from_accepted(accepted),
-                        allow_retry=not post_paid,
-                    )
-                    if choice == "retry":
-                        continue
-                    if post_paid:
-                        # Оплата уже ушла — не помечаем skip (иначе уйдёт в отмену).
-                        warn(
-                            f"Сделка #{accepted.index}: оплата была, "
-                            "«На главную» не нажалась — считаем оплаченной"
-                        )
-                        bank_ok = True
-                        progress.mark_paid(accepted.index)
-                        try:
-                            from notify.cancel import register_paid_deal
-
-                            d = accepted.data or {}
-                            digits = str(
-                                (d.get("account") or {}).get("digits")
-                                or accepted.deal.account_digits
-                                or ""
-                            )
-                            inp = d.get("amount_input") or {}
-                            amt = float(
-                                inp.get("value")
-                                if inp.get("value") is not None
-                                else accepted.deal.amount_tjs
-                                or 0
-                            )
-                            register_paid_deal(
-                                index=accepted.index,
-                                holder=str(
-                                    d.get("holder_name")
-                                    or accepted.deal.holder_name
-                                    or ""
-                                ),
-                                card_digits=digits,
-                                amount_tjs=amt,
-                                order_id=accepted.order_id or "",
-                            )
-                        except Exception as reg_exc:
-                            info(f"Учёт выплаты для отмен: {reg_exc}")
-                        break
-                    warn(
-                        f"Сделка #{accepted.index} пропущена — "
-                        f"банк не выполнен, слот засчитан "
-                        f"(остаётся в пуле чеков для отмены)"
-                    )
-                    accepted.bank_skipped = True
-                    progress.mark_skipped(
-                        accepted.index, "Перевод не выполнен"
-                    )
-                    list_page = None
-                    break
-
+            bank_ok = await pay_accepted_deal(
+                accepted, cfg, progress=progress
+            )
             if not bank_ok:
+                list_page = None
                 break
 
             keep_pages = [

@@ -17,6 +17,7 @@ type Api = {
     skip_bog: boolean,
     visa_only: boolean,
     max_remaining: boolean,
+    redirect_prefixes?: string[],
   ) => Promise<Record<string, unknown>>;
   start_pipeline: (
     max_deals: number,
@@ -28,6 +29,11 @@ type Api = {
     from_pending: boolean,
   ) => Promise<Record<string, unknown>>;
   start_login: () => Promise<Record<string, unknown>>;
+  start_accept_names: (
+    max_deals: number,
+    min_amount?: string | number | null,
+    max_amount?: string | number | null,
+  ) => Promise<Record<string, unknown>>;
   stop_job: () => Promise<Record<string, unknown>>;
   confirm: (kind?: string) => Promise<Record<string, unknown>>;
   cancel_completion_deal: (order_id: string) => Promise<Record<string, unknown>>;
@@ -42,6 +48,9 @@ type Api = {
   start_decline: (
     prefixes: string[],
     tbc?: boolean,
+    max_per_run?: number,
+    min_amount?: string | number | null,
+    max_amount?: string | number | null,
   ) => Promise<Record<string, unknown>>;
   start_redirect: (
     trader_ids: string[],
@@ -52,6 +61,7 @@ type Api = {
     skip_bog: boolean,
     visa_only: boolean,
     max_remaining: boolean,
+    redirect_prefixes?: string[],
   ) => Promise<Record<string, unknown>>;
 };
 

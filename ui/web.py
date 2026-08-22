@@ -17,6 +17,9 @@ from core.paths import ROOT
 from completion.registry import proofs_dir, videos_dir
 from core.logkit import make_event, set_ui_sink
 from core.config import bank_settings, load_config
+from core.decline_bins import DECLINE_BIN_PREFIXES, clamp_decline_limit
+from core.redirect_bins import REDIRECT_BIN_PREFIXES
+from core.redirect_rules import REDIRECT_MAX_REMAINING_HOURS
 from core.ensure_configs import ensure_local_configs
 from ui.hooks import (
     clear_job_window_hooks,
@@ -35,21 +38,27 @@ from ui.progress import (
     set_completion_progress_handler,
     set_pipeline_progress_handler,
 )
+from core.accept_names import ACCEPT_NAMES_DEFAULT_MAX
 from ui.settings import (
     apply_gui_settings,
     apply_redirect_filters,
+    apply_redirect_bin_filters,
     apply_decline_bin_filters,
     decline_bin_settings,
+    redirect_bin_settings,
     decline_tbc_enabled,
+    decline_max_per_run,
+    decline_amount_settings,
+    redirect_amount_settings,
+    apply_redirect_amounts,
     redirect_filter_settings,
-    DECLINE_BIN_PREFIXES,
 )
 from ui.job_control import begin_job, request_stop
 from pipeline.runner import run_login, run_pipeline
 from core.self_update import apply_update, read_version, update_status
 from ui.prompts import set_confirm_handler, set_recovery_handler
 
-JobMode = Literal["", "pipeline", "login", "decline", "redirect"]
+JobMode = Literal["", "pipeline", "login", "decline", "redirect", "accept_names"]
 WEB_UI = ROOT / "web_ui" / "dist" / "index.html"
 WEB_UI_LEGACY = ROOT / "web_ui" / "index.legacy.html"
 # Decline внутри репо (раньше лежал рядом: ../platcore-decline)
@@ -285,7 +294,10 @@ class TzkApi:
         pipe = cfg.get("pipeline") or {}
         val = cfg.get("validation") or {}
         redir = redirect_filter_settings()
+        redir_bins = redirect_bin_settings()
+        redir_amt = redirect_amount_settings()
         bins = decline_bin_settings()
+        amounts = decline_amount_settings()
         adb_text, adb_ok = _adb_status_text()
         serial = bank_settings(cfg).get("adb_serial") or ""
         return {
@@ -299,9 +311,17 @@ class TzkApi:
             "redirect_skip_bog": bool(redir.get("skip_bog", False)),
             "redirect_visa_only": bool(redir.get("visa_only", False)),
             "redirect_max_remaining": bool(redir.get("max_remaining", False)),
+            "redirect_bin_list": list(REDIRECT_BIN_PREFIXES),
+            "redirect_bin_toggles": redir_bins,
+            "redirect_max_per_run": redir_amt.get("max_per_run", "5"),
+            "redirect_min_amount": redir_amt.get("min_amount", ""),
+            "redirect_max_amount": redir_amt.get("max_amount", ""),
             "decline_bin_list": list(DECLINE_BIN_PREFIXES),
             "decline_bin_toggles": bins,
             "decline_tbc": decline_tbc_enabled(),
+            "decline_max_per_run": decline_max_per_run(),
+            "decline_min_amount": amounts.get("min_amount", ""),
+            "decline_max_amount": amounts.get("max_amount", ""),
             "screens_dir": str(proofs_dir(cfg)),
             "videos_dir": str(videos_dir(cfg)),
             "video_min_usdt": float(
@@ -382,8 +402,9 @@ class TzkApi:
         skip_bog: bool = False,
         visa_only: bool = False,
         max_remaining: bool = False,
+        redirect_prefixes: list[str] | str | None = None,
     ) -> dict[str, Any]:
-        """Сохранить фильтры редиректа в platcore-decline/config.yaml."""
+        """Сохранить фильтры редиректа локально (runtime/deals_ui.yaml)."""
         try:
             ensure_local_configs()
             saved = apply_redirect_filters(
@@ -391,13 +412,28 @@ class TzkApi:
                 visa_only=bool(visa_only),
                 max_remaining=bool(max_remaining),
             )
+            if redirect_prefixes is not None:
+                if isinstance(redirect_prefixes, str):
+                    raw_rp: list[Any] = redirect_prefixes.split(",")
+                elif isinstance(redirect_prefixes, (list, tuple)):
+                    raw_rp = list(redirect_prefixes)
+                else:
+                    raw_rp = []
+                wanted = {
+                    "".join(ch for ch in str(x) if ch.isdigit())
+                    for x in raw_rp
+                    if str(x).strip()
+                }
+                apply_redirect_bin_filters(
+                    prefixes=[p for p in REDIRECT_BIN_PREFIXES if p in wanted]
+                )
             parts = []
             if saved.get("skip_bog"):
                 parts.append("пропуск BoG")
             if saved.get("visa_only"):
                 parts.append("только Visa")
             if saved.get("max_remaining"):
-                parts.append("остаток < 4ч")
+                parts.append(f"остаток < {REDIRECT_MAX_REMAINING_HOURS:g}ч")
             hint = ", ".join(parts) if parts else "выключены"
             return self._ok(message=f"[OK] Фильтры редиректа: {hint}\n")
         except Exception as exc:
@@ -460,10 +496,68 @@ class TzkApi:
         self._start_worker(run_pipeline, "pipeline")
         return self._ok()
 
+    def start_accept_names(
+        self,
+        max_deals: int | float | str | None = None,
+        min_amount: int | float | str | None = None,
+        max_amount: int | float | str | None = None,
+    ) -> dict[str, Any]:
+        if self._running:
+            return self._err("Уже выполняется")
+        try:
+            n = int(max_deals) if max_deals not in (None, "") else ACCEPT_NAMES_DEFAULT_MAX
+        except (TypeError, ValueError):
+            return self._err("Количество: 1–50")
+        n = max(1, min(50, n))
+        try:
+            min_a = (
+                self._parse_amount(str(min_amount))
+                if min_amount not in (None, "")
+                else None
+            )
+            max_a = (
+                self._parse_amount(str(max_amount))
+                if max_amount not in (None, "")
+                else None
+            )
+        except (TypeError, ValueError) as exc:
+            return self._err(f"Некорректная сумма USDT: {exc}")
+        amt_bits = []
+        if min_a is not None:
+            amt_bits.append(f"от {min_a:g}")
+        if max_a is not None:
+            amt_bits.append(f"до {max_a:g}")
+        amt_note = f" · {' '.join(amt_bits)} USDT" if amt_bits else ""
+        self._status = f"Принимаю сделки (owner = sender, до {n})…"
+        self._set_running(True, "accept_names")
+        self._push_log(
+            f"Accept по именам: до {n}{amt_note}, только PUT /accept",
+            service="pipeline",
+            status="section",
+        )
+
+        async def _job() -> None:
+            from platcore.api_accept import accept_matching_names_loop
+
+            cfg = load_config()
+            payload = await accept_matching_names_loop(
+                cfg,
+                max_deals=n,
+                min_amount=min_a,
+                max_amount=max_a,
+            )
+            self._decline_result(payload)
+
+        self._start_worker(_job, "accept_names")
+        return self._ok()
+
     def start_decline(
         self,
         prefixes: list[str] | str | None = None,
         tbc: bool = False,
+        max_per_run: int | float | str | None = None,
+        min_amount: int | float | str | None = None,
+        max_amount: int | float | str | None = None,
         bank: str | list[str] | None = None,
     ) -> dict[str, Any]:
         # pywebview: start_decline(["558328", …]) / start_decline(list, tbc)
@@ -498,14 +592,41 @@ class TzkApi:
                     decline_bank=str(bank or "tbc"),
                 )
             return self._err("Включи TBC или хотя бы один BIN")
+        limit = clamp_decline_limit(
+            max_per_run if max_per_run not in (None, "") else decline_max_per_run()
+        )
         try:
-            apply_decline_bin_filters(prefixes=bins, tbc=include_tbc)
+            min_a = (
+                self._parse_amount(str(min_amount))
+                if min_amount not in (None, "")
+                else None
+            )
+            max_a = (
+                self._parse_amount(str(max_amount))
+                if max_amount not in (None, "")
+                else None
+            )
+        except (TypeError, ValueError) as exc:
+            return self._err(f"Некорректная сумма: {exc}")
+        try:
+            apply_decline_bin_filters(
+                prefixes=bins,
+                tbc=include_tbc,
+                max_per_run=limit,
+                min_amount=min_a,
+                max_amount=max_a,
+                clear_min_amount=min_a is None,
+                clear_max_amount=max_a is None,
+            )
         except Exception:
             pass
         return self._start_decline_or_redirect(
             redirect=False,
             decline_prefixes=bins,
             decline_tbc=include_tbc,
+            max_per_run=limit,
+            min_amount=min_a,
+            max_amount=max_a,
         )
 
     def start_redirect(
@@ -518,13 +639,14 @@ class TzkApi:
         skip_bog: bool = False,
         visa_only: bool = False,
         max_remaining: bool = False,
+        redirect_prefixes: list[str] | str | None = None,
     ) -> dict[str, Any]:
         """Редирект сделок: сумма + лимит, выбранные traderId равномерно.
 
         deal_status: new (по умолчанию) или pending.
         По умолчанию все подряд. skip_bog=True — не редиректить BOG/548888….
         visa_only=True — только карты Visa (4…).
-        max_remaining=True — только Time remaining < 4ч (expiredAt).
+        max_remaining=True — только Time remaining < 1ч (expiredAt).
         """
         # list[str] или comma-string (старый React join) — не итерировать str по символам
         if isinstance(trader_ids, str):
@@ -551,11 +673,31 @@ class TzkApi:
             return self._err(f"Некорректные параметры редиректа: {exc}")
         if max_n is not None and max_n < 1:
             return self._err("Количество редиректов должно быть ≥ 1")
+        if isinstance(redirect_prefixes, str):
+            raw_rp: list[Any] = redirect_prefixes.split(",")
+        elif isinstance(redirect_prefixes, (list, tuple)):
+            raw_rp = list(redirect_prefixes)
+        else:
+            raw_rp = []
+        rp_wanted = {
+            "".join(ch for ch in str(x) if ch.isdigit())
+            for x in raw_rp
+            if str(x).strip()
+        }
+        redirect_bins = [p for p in REDIRECT_BIN_PREFIXES if p in rp_wanted]
         try:
             apply_redirect_filters(
                 skip_bog=bool(skip_bog),
                 visa_only=bool(visa_only),
                 max_remaining=bool(max_remaining),
+            )
+            apply_redirect_bin_filters(prefixes=redirect_bins)
+            apply_redirect_amounts(
+                max_per_run=max_n,
+                min_amount=min_a,
+                max_amount=max_a,
+                clear_min_amount=min_a is None,
+                clear_max_amount=max_a is None,
             )
         except Exception:
             pass
@@ -569,6 +711,7 @@ class TzkApi:
             skip_bog=bool(skip_bog),
             visa_only=bool(visa_only),
             max_remaining=bool(max_remaining),
+            redirect_prefixes=redirect_bins,
         )
 
     def _start_decline_or_redirect(
@@ -586,6 +729,7 @@ class TzkApi:
         skip_bog: bool = False,
         visa_only: bool = False,
         max_remaining: bool = False,
+        redirect_prefixes: list[str] | None = None,
     ) -> dict[str, Any]:
         if self._running:
             return self._err("Уже выполняется")
@@ -618,7 +762,14 @@ class TzkApi:
             if visa_only:
                 filter_bits.append("только Visa")
             if max_remaining:
-                filter_bits.append("остаток < 4ч")
+                filter_bits.append(f"остаток < {REDIRECT_MAX_REMAINING_HOURS:g}ч")
+            rp = [
+                p
+                for p in REDIRECT_BIN_PREFIXES
+                if p in (redirect_prefixes or [])
+            ]
+            if rp:
+                filter_bits.append("BIN " + ", ".join(rp))
             filter_note = ", ".join(filter_bits) if filter_bits else "все подряд"
             self._status = f"Редирект {status_word}-сделок…"
             self._push_log(
@@ -635,9 +786,16 @@ class TzkApi:
                 if prefixes:
                     parts.append(", ".join(prefixes))
                 bank_word = " + ".join(parts)
-                self._status = f"Отменяю сделки ({bank_word}, до 10)…"
+                n = clamp_decline_limit(max_per_run)
+                amt_bits = []
+                if min_amount is not None:
+                    amt_bits.append(f"от {min_amount:g}")
+                if max_amount is not None:
+                    amt_bits.append(f"до {max_amount:g}")
+                amt_note = f" · {' '.join(amt_bits)} USDT" if amt_bits else ""
+                self._status = f"Отменяю сделки ({bank_word}, до {n})…"
                 self._push_log(
-                    f"Отмена: {bank_word} · сорт по remaining · первые 10",
+                    f"Отмена: {bank_word} · сорт по remaining · первые {n}{amt_note}",
                     service="decline",
                     status="section",
                 )
@@ -669,6 +827,7 @@ class TzkApi:
                 "skip_bog": skip_bog,
                 "visa_only": visa_only,
                 "max_remaining": max_remaining,
+                "redirect_prefixes": redirect_prefixes or [],
             },
             name=f"tzk-{mode}",
             daemon=True,
@@ -1046,6 +1205,9 @@ class TzkApi:
         total = int(payload.get("total") or len(deals))
         if action == "redirect":
             head = f"Редирект: {redirected}/{total}"
+        elif action == "accept":
+            accepted = int(payload.get("accepted") or 0)
+            head = f"Принято: {accepted}/{total}"
         else:
             head = f"Отмена: {cancelled}/{total}"
         if failed:
@@ -1072,9 +1234,10 @@ class TzkApi:
 
     def _decline_result(self, payload: dict[str, Any]) -> None:
         action = str(payload.get("action") or "cancel")
-        default = (
-            "Редирект завершён" if action == "redirect" else "Отмена завершена"
-        )
+        default = {
+            "redirect": "Редирект завершён",
+            "accept": "Принятие завершено",
+        }.get(action, "Отмена завершена")
         self._status = str(payload.get("message") or default)
         self._notify_ui(
             f"updateDeclineResult({json.dumps(payload, ensure_ascii=False)});"
@@ -1096,6 +1259,7 @@ class TzkApi:
         skip_bog: bool = False,
         visa_only: bool = False,
         max_remaining: bool = False,
+        redirect_prefixes: list[str] | None = None,
     ) -> None:
         begin_job()
         saw_ui_result = False
@@ -1121,6 +1285,16 @@ class TzkApi:
                 cmd.append("--visa-only")
             if max_remaining:
                 cmd.append("--max-remaining")
+                cmd.extend(
+                    ["--max-remaining-hours", str(REDIRECT_MAX_REMAINING_HOURS)]
+                )
+            rp = [
+                p
+                for p in REDIRECT_BIN_PREFIXES
+                if p in (redirect_prefixes or [])
+            ]
+            for p in rp:
+                cmd.extend(["--redirect-prefix", p])
         else:
             prefixes = [
                 "".join(ch for ch in str(p) if ch.isdigit())
@@ -1133,7 +1307,12 @@ class TzkApi:
                     cmd.extend(["--prefix", p])
                 if decline_tbc:
                     cmd.append("--tbc")
-                cmd.extend(["--max-per-run", "10"])
+                n = clamp_decline_limit(max_per_run)
+                cmd.extend(["--max-per-run", str(n)])
+                if min_amount is not None:
+                    cmd.extend(["--min-amount", str(min_amount)])
+                if max_amount is not None:
+                    cmd.extend(["--max-amount", str(max_amount)])
             else:
                 bank = str(decline_bank or "tbc").strip().lower() or "tbc"
                 if bank not in ("tbc", "bog"):

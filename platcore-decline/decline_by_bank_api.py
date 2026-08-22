@@ -33,7 +33,18 @@ ROOT = Path(__file__).resolve().parent
 _REPO = ROOT.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
-from core.decline_bins import DECLINE_BIN_PREFIXES, DECLINE_MAX_PER_RUN
+from core.decline_bins import (
+    DECLINE_BIN_PREFIXES,
+    DECLINE_DEFAULT_PER_RUN,
+    clamp_decline_limit,
+)
+from core.deals_ui_local import redirect_ui_bin_prefixes, redirect_ui_filters
+from core.redirect_bins import REDIRECT_BIN_PREFIXES, normalize_redirect_prefixes
+from core.redirect_rules import (
+    REDIRECT_MAX_REMAINING_HOURS,
+    REDIRECT_SKIP_BANK_PATTERNS,
+    REDIRECT_SKIP_CARD_PREFIXES,
+)
 
 _DEFAULT_TOKEN_KEYS = (
     "token",
@@ -189,6 +200,7 @@ def _digits_only(raw: str | None) -> str:
     return "".join(ch for ch in str(raw or "") if ch.isdigit())
 
 
+
 def normalize_bin_prefixes(raw: list[str] | tuple[str, ...] | None) -> list[str]:
     """Только известные BIN отмены, без дублей, порядок как в DECLINE_BIN_PREFIXES."""
     wanted = {_digits_only(p) for p in (raw or []) if str(p).strip()}
@@ -213,23 +225,10 @@ def deal_matches_bank(
     return bank_matches(recipient_bank_name(row), patterns)
 
 
-def _redirect_skip_rules(cfg: dict) -> tuple[list[str], list[str]]:
+def _redirect_skip_rules(_cfg: dict) -> tuple[list[str], list[str]]:
     """Что НЕ редиректить: BIN + имя банка (Bank of Georgia / 548888)."""
-    red = cfg.get("bank_redirect") or {}
-    prefixes = [
-        "".join(ch for ch in str(p) if ch.isdigit())
-        for p in (red.get("skip_card_prefixes") or ["548888"])
-        if str(p).strip()
-    ]
-    prefixes = [p for p in prefixes if p]
-    patterns = [
-        str(p).strip().lower()
-        for p in (
-            red.get("skip_bank_patterns")
-            or ["bank of georgia", "georgia", "bog"]
-        )
-        if str(p).strip()
-    ]
+    prefixes = list(REDIRECT_SKIP_CARD_PREFIXES)
+    patterns = list(REDIRECT_SKIP_BANK_PATTERNS)
     return prefixes, patterns
 
 
@@ -677,32 +676,32 @@ async def run(args: argparse.Namespace) -> int:
             cfg, bank_preset=bank_preset
         )
     skip_prefixes, skip_bank_patterns = _redirect_skip_rules(cfg)
-    red = _redirect_cfg(cfg) if do_redirect else {}
-    # CLI --skip-bog / --visa-only включают; иначе берём из config
+    ui_red = redirect_ui_filters() if do_redirect else {}
+    # Фильтры: CLI или runtime/deals_ui.yaml. bank_redirect.* в config не читаем.
     skip_bog = bool(
         do_redirect
         and (
             getattr(args, "skip_bog", False)
-            or bool(red.get("skip_bog", False))
+            or ui_red.get("skip_bog", False)
         )
     )
     visa_only = bool(
         do_redirect
         and (
             getattr(args, "visa_only", False)
-            or bool(red.get("visa_only", False))
+            or ui_red.get("visa_only", False)
         )
     )
     max_remaining = bool(
         do_redirect
         and (
             getattr(args, "max_remaining", False)
-            or bool(red.get("max_remaining", False))
+            or ui_red.get("max_remaining", False)
         )
     )
     hours_raw = getattr(args, "max_remaining_hours", None)
     if hours_raw is None:
-        hours_raw = red.get("max_remaining_hours", 4)
+        hours_raw = REDIRECT_MAX_REMAINING_HOURS
     try:
         max_remaining_hours = float(hours_raw) if hours_raw is not None else 4.0
     except (TypeError, ValueError):
@@ -710,40 +709,49 @@ async def run(args: argparse.Namespace) -> int:
     if max_remaining_hours <= 0:
         max_remaining = False
 
+    redirect_prefixes: list[str] = []
+    if do_redirect:
+        raw_rp = getattr(args, "redirect_prefixes", None)
+        if raw_rp:
+            redirect_prefixes = normalize_redirect_prefixes(raw_rp)
+            if raw_rp and not redirect_prefixes:
+                raise SystemExit(
+                    "Неизвестный BIN редиректа. Доступны: "
+                    + ", ".join(REDIRECT_BIN_PREFIXES)
+                )
+        else:
+            redirect_prefixes = redirect_ui_bin_prefixes()
+
     if do_redirect:
         traders = _resolve_active_traders(
             cfg,
             cli_ids=list(getattr(args, "trader_ids", None) or []),
             cli_labels=list(getattr(args, "trader_labels", None) or []),
         )
-        max_per_run = int(
-            getattr(args, "max_per_run", None)
-            if getattr(args, "max_per_run", None) is not None
-            else (red.get("max_per_run") or 0)
-        )
-        min_raw = (
-            args.min_amount
-            if getattr(args, "min_amount", None) is not None
-            else red.get("min_amount")
-        )
-        max_raw = (
-            args.max_amount
-            if getattr(args, "max_amount", None) is not None
-            else red.get("max_amount")
-        )
-        min_amt = float(min_raw) if min_raw is not None else None
-        max_amt = float(max_raw) if max_raw is not None else None
-    elif ui_filter:
-        decline_cfg = cfg.get("bank_decline") or {}
-        raw_limit = getattr(args, "max_per_run", None)
-        if raw_limit is None:
-            raw_limit = decline_cfg.get("max_per_run", DECLINE_MAX_PER_RUN)
+        max_per_run = int(getattr(args, "max_per_run", None) or 0)
+        min_raw = getattr(args, "min_amount", None)
+        max_raw = getattr(args, "max_amount", None)
         try:
-            max_per_run = int(raw_limit)
+            min_amt = float(min_raw) if min_raw not in (None, "") else None
         except (TypeError, ValueError):
-            max_per_run = DECLINE_MAX_PER_RUN
-        if max_per_run <= 0:
-            max_per_run = DECLINE_MAX_PER_RUN
+            min_amt = None
+        try:
+            max_amt = float(max_raw) if max_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            max_amt = None
+    elif ui_filter:
+        raw_limit = getattr(args, "max_per_run", None) or DECLINE_DEFAULT_PER_RUN
+        max_per_run = clamp_decline_limit(raw_limit)
+        min_raw = getattr(args, "min_amount", None)
+        max_raw = getattr(args, "max_amount", None)
+        try:
+            min_amt = float(min_raw) if min_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            min_amt = None
+        try:
+            max_amt = float(max_raw) if max_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            max_amt = None
 
     if args.debug_token:
         await debug_storage_keys(cfg, base_url)
@@ -777,6 +785,11 @@ async def run(args: argparse.Namespace) -> int:
                 f"[INFO] Только Time remaining < {max_remaining_hours:g} ч "
                 f"(expiredAt − now)"
             )
+        if redirect_prefixes:
+            print(
+                "[INFO] Только карты BIN "
+                + ", ".join(p + "*" for p in redirect_prefixes)
+            )
         print(f"[INFO] Аккаунты (равномерно): {labels}")
     else:
         bits = []
@@ -786,9 +799,19 @@ async def run(args: argparse.Namespace) -> int:
             bits.append(f"BIN {', '.join(p + '*' for p in card_prefixes)}")
         print(f"[INFO] Фильтр отмены ({bank_label}): {'; '.join(bits) or '—'}")
         if ui_filter:
+            amt_bits = []
+            if min_amt is not None:
+                amt_bits.append(f">= {min_amt:g}")
+            if max_amt is not None:
+                amt_bits.append(f"<= {max_amt:g}")
             print(
                 f"[INFO] Сортировка: остаток времени по возрастанию, "
                 f"берём первые {max_per_run}"
+                + (
+                    f", сумма {' и '.join(amt_bits)}"
+                    if amt_bits
+                    else ""
+                )
             )
     mode_label = "РЕДИРЕКТ" if do_redirect else "ОТМЕНА"
     print(f"[INFO] Режим: {mode_label}{' (execute)' if args.execute else ' dry-run'}\n")
@@ -833,10 +856,16 @@ async def run(args: argparse.Namespace) -> int:
     skipped_bog = 0
     skipped_non_visa = 0
     skipped_remaining = 0
+    skipped_redirect_bin = 0
     for row in rows:
         if do_redirect:
             if skip_bog and should_skip_redirect(row, cfg):
                 skipped_bog += 1
+                continue
+            if redirect_prefixes and not card_prefix_matches(
+                account_digits(row), redirect_prefixes
+            ):
+                skipped_redirect_bin += 1
                 continue
             if visa_only and not is_visa_card(row):
                 skipped_non_visa += 1
@@ -855,6 +884,10 @@ async def run(args: argparse.Namespace) -> int:
                 row, patterns=patterns, card_prefixes=card_prefixes
             ):
                 continue
+            if not _amount_in_range(
+                _deal_amount(row), min_amount=min_amt, max_amount=max_amt
+            ):
+                continue
         candidates.append(row)
 
     if do_redirect and skipped_bog:
@@ -868,6 +901,8 @@ async def run(args: argparse.Namespace) -> int:
             f"[INFO] Пропущено (остаток ≥ {max_remaining_hours:g} ч "
             f"или нет expiredAt): {skipped_remaining}"
         )
+    if do_redirect and skipped_redirect_bin:
+        print(f"[INFO] Пропущено (не BIN редиректа): {skipped_redirect_bin}")
 
     if (not do_redirect) and ui_filter:
         candidates.sort(key=_remaining_sort_key)
@@ -1036,6 +1071,17 @@ def main() -> None:
         help="в отмену: TBC (имя TBC / карты 4315…) вместе с --prefix",
     )
     parser.add_argument(
+        "--redirect-prefix",
+        action="append",
+        dest="redirect_prefixes",
+        default=None,
+        metavar="BIN",
+        help=(
+            "BIN карты для редиректа (можно несколько раз): "
+            "537524 / 557755. Если указан — только эти карты."
+        ),
+    )
+    parser.add_argument(
         "--prefix",
         action="append",
         dest="prefixes",
@@ -1044,7 +1090,7 @@ def main() -> None:
         help=(
             "BIN карты для отмены (можно несколько раз): "
             "558328 / 531125 / 516746 / 548888. "
-            "Только эти реки, сортировка по остатку времени, первые 10."
+            "Сортировка по остатку времени, лимит --max-per-run (1–50)."
         ),
     )
     parser.add_argument(

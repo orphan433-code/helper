@@ -13,10 +13,12 @@ _LABEL_STRONG = (138, 137, 152)
 _VALUE_STRONG = (255, 255, 255)
 
 _W, _H = 1024, 277
+_H_EUR = 376
 _LEFT_X = 42
 _RIGHT_X = 981
 _ROW1_TOP = 66
 _ROW2_TOP = 165
+_ROW3_TOP = 270
 
 # (path, index) — Helvetica Neue совпал с шириной оригинала Save.
 _FONT_REG = (
@@ -97,24 +99,42 @@ def _draw_right(
     draw.text((x, top - bbox[1]), text, font=font, fill=fill)
 
 
+def _usd_line(amount_usd: str | float | None) -> str:
+    if amount_usd in (None, "", 0, 0.0):
+        return ""
+    return f"{_fmt_amt(amount_usd)} USD"
+
+
 def render_hz_card(
     *,
     give_amt: str | float,
     give_cur: str,
     tjs: str | float,
     brand_label: str = "Activ to Visa",
+    amount_usd: str | float | None = None,
 ) -> Image.Image:
-    """Две строки: I give / Activ to — как Save без кнопки и frozen."""
-    give = f"{_fmt_amt(give_amt)} {_fmt_cur(give_cur)}"
+    """USD: 2 строки. EUR: 3 — I give (XE) / Activ / Amount USD. Как Save."""
+    cur = _fmt_cur(give_cur)
     activ = f"{_fmt_amt(tjs)} TJS"
     row2_label = brand_label.strip() or "Activ to Visa"
+    usd_text = _usd_line(amount_usd)
+    three = cur == "EUR" and bool(usd_text)
 
-    img = Image.new("RGB", (_W, _H), _BG)
+    if three:
+        give_label = "I give (XE amount)"
+        give = f"{_fmt_amt(give_amt)} EUR"
+        height = _H_EUR
+    else:
+        give_label = "I give"
+        give = f"{_fmt_amt(give_amt)} {cur or 'USD'}"
+        height = _H
+
+    img = Image.new("RGB", (_W, height), _BG)
     draw = ImageDraw.Draw(img)
     font_row1 = _load_font(_FONT_REG, 46)
     font_row2 = _load_font(_FONT_BOLD, 48)
 
-    _draw_left(draw, "I give", font=font_row1, fill=_LABEL, x=_LEFT_X, top=_ROW1_TOP)
+    _draw_left(draw, give_label, font=font_row1, fill=_LABEL, x=_LEFT_X, top=_ROW1_TOP)
     _draw_right(draw, give, font=font_row1, fill=_VALUE, right=_RIGHT_X, top=_ROW1_TOP)
     _draw_left(
         draw, row2_label, font=font_row2, fill=_LABEL_STRONG, x=_LEFT_X, top=_ROW2_TOP
@@ -122,6 +142,13 @@ def render_hz_card(
     _draw_right(
         draw, activ, font=font_row2, fill=_VALUE_STRONG, right=_RIGHT_X, top=_ROW2_TOP
     )
+    if three:
+        _draw_left(
+            draw, "Amount USD", font=font_row1, fill=_LABEL, x=_LEFT_X, top=_ROW3_TOP
+        )
+        _draw_right(
+            draw, usd_text, font=font_row1, fill=_VALUE, right=_RIGHT_X, top=_ROW3_TOP
+        )
     return img
 
 
@@ -136,6 +163,7 @@ def render_from_ledger(
         give_cur=str(record.get("give_cur") or "usd"),
         tjs=record.get("tjs") or "0",
         brand_label=activ_brand_label(card_digits, brand=brand),
+        amount_usd=record.get("amount_usd"),
     )
 
 
@@ -154,6 +182,7 @@ if __name__ == "__main__":
     parser.add_argument("--give", default="533.50")
     parser.add_argument("--cur", default="usd")
     parser.add_argument("--tjs", default="4945.55")
+    parser.add_argument("--usd", default="", help="Amount USD (евро, третья строка)")
     parser.add_argument("--brand", default="visa")
     parser.add_argument("--ledger", default="", help="JSON файл record ledger")
     parser.add_argument(
@@ -171,6 +200,7 @@ if __name__ == "__main__":
             give_cur=args.cur,
             tjs=args.tjs,
             brand_label=activ_brand_label(brand=args.brand),
+            amount_usd=args.usd or None,
         )
     out = save_hz_card(Path(args.out), img)
     print(out)

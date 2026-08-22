@@ -27,6 +27,7 @@ export function RunView() {
   const appendLog = useConsole((st) => st.appendLog);
   const openDialog = useConsole((st) => st.openDialog);
   const clearCancelAlerts = useConsole((st) => st.clearCancelAlerts);
+  const clearDeclineResult = useConsole((st) => st.clearDeclineResult);
   const applyState = useConsole((st) => st.applyState);
   const applyReceiptPreview = useConsole((st) => st.applyReceiptPreview);
 
@@ -156,6 +157,44 @@ export function RunView() {
     receiptsWaiting && previewAwait > 0 && previewReady > 0
       ? `Загрузить (${previewReady}/${previewAwait})`
       : "Загрузить";
+
+  const acceptBusy = running && jobMode === "accept_names";
+
+  const acceptNamesRun = async () => {
+    if (acceptBusy || running) return;
+    const maxN = parseInt(String(s.acceptNamesMax).trim(), 10);
+    if (!Number.isFinite(maxN) || maxN < 1) {
+      await openDialog({
+        title: "Принять",
+        body: "Укажи количество (1–50)",
+        alert: true,
+      });
+      return;
+    }
+    const take = Math.min(50, maxN);
+    const amtBits = [
+      ...(s.acceptNamesMinAmt.trim() ? [`от ${s.acceptNamesMinAmt.trim()}`] : []),
+      ...(s.acceptNamesMaxAmt.trim() ? [`до ${s.acceptNamesMaxAmt.trim()}`] : []),
+    ];
+    const amtNote = amtBits.length ? ` · ${amtBits.join(" ")} USDT` : "";
+    const ok = await openDialog({
+      title: "Принять сделки",
+      body: `Примет до ${take} сделок, где имена совпадают${amtNote}. Только Accept в PlatCore — без банка и чеков.`,
+      danger: true,
+      confirmLabel: "Принять",
+    });
+    if (!ok) return;
+    clearDeclineResult();
+    await apiCall(
+      () =>
+        api().start_accept_names(
+          take,
+          s.acceptNamesMinAmt.trim() || null,
+          s.acceptNamesMaxAmt.trim() || null,
+        ),
+      err,
+    );
+  };
 
   return (
     <BlurFade delay={0.05} inView>
@@ -457,6 +496,110 @@ export function RunView() {
           {showReceiptPanel && <ProgressPanelView panel={receipts} mode="receipts" />}
         </BentoCard>
       </BentoGrid>
+
+      <section className="border-t border-slate-200/80 pt-8">
+        <div className="mb-4 px-0.5">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-400">
+            Отдельно от пайплайна
+          </p>
+          <h2 className="mt-1 text-base font-semibold text-slate-900">
+            Принять · совпадение имён
+          </h2>
+          <p className="mt-0.5 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+            Просматривает новые сделки и принимает те, где имя на счёте совпадает с именем
+            отправителя. Только «Принять» в PlatCore — банк, переводы и чеки здесь не
+            запускаются.
+          </p>
+        </div>
+
+        <BentoGrid className="auto-rows-[minmax(0,auto)] lg:grid-rows-[auto]">
+          <BentoCard
+            className="col-span-3 lg:col-span-2"
+            name="Запуск"
+            description="Сколько сделок принять и в каком диапазоне суммы"
+            tone={acceptBusy ? "active" : "default"}
+            cta={
+              <RippleButton
+                disabled={acceptBusy || running}
+                onClick={() => void acceptNamesRun()}
+                className={cn(
+                  "min-w-[7.5rem] border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700",
+                  (acceptBusy || running) && "opacity-90",
+                )}
+                rippleColor="#a7f3d0"
+              >
+                {acceptBusy ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" />
+                    Принимаю…
+                  </>
+                ) : (
+                  "Принять"
+                )}
+              </RippleButton>
+            }
+          >
+            <div className="flex flex-col gap-3">
+              <div
+                className={cn(
+                  "rounded-xl border px-3 py-2.5 text-sm",
+                  acceptBusy
+                    ? "border-slate-300 bg-slate-50"
+                    : "border-emerald-200/80 bg-emerald-50/50",
+                )}
+              >
+                <div className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+                  Когда сделка подходит
+                </div>
+                <p className="mt-0.5 font-medium text-slate-800">
+                  Владелец счёта и отправитель — один и тот же человек
+                </p>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  Сравниваем имена из карточки сделки (Account owner и Sender name).
+                  Латиница и кириллица, порядок слов и отчество не мешают — главное, чтобы
+                  совпали имя и фамилия.
+                </p>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                <Field label="Сколько">
+                  <Input
+                    inputMode="numeric"
+                    min={1}
+                    max={50}
+                    value={s.acceptNamesMax}
+                    placeholder="1–50"
+                    disabled={acceptBusy || running}
+                    onChange={(e) =>
+                      patch({
+                        acceptNamesMax: e.target.value.replace(/[^\d]/g, "").slice(0, 2),
+                      })
+                    }
+                  />
+                </Field>
+                <div className="space-y-1.5 sm:col-span-2">
+                  <Label>Сумма, USDT</Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      placeholder="от"
+                      value={s.acceptNamesMinAmt}
+                      disabled={acceptBusy || running}
+                      onChange={(e) => patch({ acceptNamesMinAmt: e.target.value })}
+                    />
+                    <span className="text-muted-foreground">–</span>
+                    <Input
+                      placeholder="до"
+                      value={s.acceptNamesMaxAmt}
+                      disabled={acceptBusy || running}
+                      onChange={(e) => patch({ acceptNamesMaxAmt: e.target.value })}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </BentoCard>
+        </BentoGrid>
+      </section>
     </div>
     </BlurFade>
   );

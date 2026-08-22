@@ -23,20 +23,24 @@ export function DealsView() {
     void openDialog({ title: "Ошибка", body: e, danger: true, alert: true });
   };
 
-  const opsBusy = running && (jobMode === "redirect" || jobMode === "decline");
+  const opsBusy =
+    running && (jobMode === "redirect" || jobMode === "decline");
   const selectedLabels = TRADERS.filter((t) => s.redirAccounts[t.id]).map((t) => t.label);
   const selectedTraders = TRADERS.filter((t) => s.redirAccounts[t.id]).map((t) => t.traderId);
 
-  const saveFilters = () =>
-    apiCall(
+  const saveFilters = () => {
+    const bins = s.redirectBinList.filter((p) => s.redirectBins[p]);
+    return apiCall(
       () =>
         api().save_redirect_filters(
           s.redirSkipBog,
           s.redirVisaOnly,
           s.redirMaxRemaining,
+          bins,
         ),
       err,
     );
+  };
 
   const redirect = async (status: string) => {
     if (opsBusy) return;
@@ -59,9 +63,11 @@ export function DealsView() {
     }
 
     const where = selectedLabels.join(", ");
+    const bins = s.redirectBinList.filter((p) => s.redirectBins[p]);
+    const binNote = bins.length ? ` · BIN ${bins.join(", ")}` : "";
     const ok = await openDialog({
       title: "Передать сделки",
-      body: `${maxN} шт. · ${status === "pending" ? "PENDING" : "NEW"} → ${where}`,
+      body: `${maxN} шт. · ${status === "pending" ? "PENDING" : "NEW"} → ${where}${binNote}`,
       danger: true,
       confirmLabel: "Передать",
     });
@@ -79,6 +85,7 @@ export function DealsView() {
         s.redirSkipBog,
         s.redirVisaOnly,
         s.redirMaxRemaining,
+        bins,
       );
     }, err);
   };
@@ -94,19 +101,44 @@ export function DealsView() {
       });
       return;
     }
+    const maxN = parseInt(String(s.declineMax).trim(), 10);
+    if (!Number.isFinite(maxN) || maxN < 1) {
+      await openDialog({
+        title: "Отмена",
+        body: "Укажи количество (1–50)",
+        alert: true,
+      });
+      return;
+    }
+    const take = Math.min(50, maxN);
     const parts = [
       ...(s.declineTbc ? ["TBC"] : []),
       ...(bins.length ? [`BIN ${bins.join(", ")}`] : []),
     ];
+    const amtBits = [
+      ...(s.declineMinAmt.trim() ? [`от ${s.declineMinAmt.trim()}`] : []),
+      ...(s.declineMaxAmt.trim() ? [`до ${s.declineMaxAmt.trim()}`] : []),
+    ];
+    const amtNote = amtBits.length ? ` · ${amtBits.join(" ")} USDT` : "";
     const ok = await openDialog({
       title: "Отменить сделки",
-      body: `${parts.join(" + ")} · до 10 шт. · сначала меньший остаток времени`,
+      body: `${parts.join(" + ")} · ${take} шт.${amtNote} · сначала меньший остаток времени`,
       danger: true,
       confirmLabel: "Отменить",
     });
     if (!ok) return;
     clearDeclineResult();
-    await apiCall(() => api().start_decline([...bins], s.declineTbc), err);
+    await apiCall(
+      () =>
+        api().start_decline(
+          [...bins],
+          s.declineTbc,
+          take,
+          s.declineMinAmt.trim() || null,
+          s.declineMaxAmt.trim() || null,
+        ),
+      err,
+    );
   };
 
   return (
@@ -171,25 +203,44 @@ export function DealsView() {
             </Field>
           </div>
 
-          <div className="grid gap-2">
-            <ToggleRow
-              label="Пропуск BoG"
-              checked={s.redirSkipBog}
-              disabled={opsBusy}
-              onChange={(v) => patch({ redirSkipBog: v })}
-            />
-            <ToggleRow
-              label="Только Visa"
-              checked={s.redirVisaOnly}
-              disabled={opsBusy}
-              onChange={(v) => patch({ redirVisaOnly: v })}
-            />
-            <ToggleRow
-              label="Остаток < 4ч"
-              checked={s.redirMaxRemaining}
-              disabled={opsBusy}
-              onChange={(v) => patch({ redirMaxRemaining: v })}
-            />
+          <div className="space-y-1.5">
+            <Label>Фильтры</Label>
+            <div className="grid grid-cols-2 gap-2">
+              {s.redirectBinList.map((bin) => (
+                <ToggleRow
+                  key={bin}
+                  label={bin}
+                  checked={!!s.redirectBins[bin]}
+                  disabled={opsBusy}
+                  onChange={(v) =>
+                    patch({
+                      redirectBins: { ...s.redirectBins, [bin]: v },
+                    })
+                  }
+                />
+              ))}
+              <ToggleRow
+                label="Пропуск BoG"
+                checked={s.redirSkipBog}
+                disabled={opsBusy}
+                onChange={(v) => patch({ redirSkipBog: v })}
+              />
+              <ToggleRow
+                label="Только Visa"
+                checked={s.redirVisaOnly}
+                disabled={opsBusy}
+                onChange={(v) => patch({ redirVisaOnly: v })}
+              />
+              <ToggleRow
+                label="Остаток < 1ч"
+                checked={s.redirMaxRemaining}
+                disabled={opsBusy}
+                onChange={(v) => patch({ redirMaxRemaining: v })}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              BIN вкл — только эти карты. Все BIN выкл — любые.
+            </p>
           </div>
 
           <div className="flex flex-wrap gap-2 pt-1">
@@ -217,13 +268,13 @@ export function DealsView() {
         name="Отмена"
       >
         <div className="flex flex-col gap-3">
-          <ToggleRow
-            label="TBC"
-            checked={s.declineTbc}
-            disabled={opsBusy}
-            onChange={(v) => patch({ declineTbc: v })}
-          />
           <div className="grid grid-cols-2 gap-2">
+            <ToggleRow
+              label="TBC"
+              checked={s.declineTbc}
+              disabled={opsBusy}
+              onChange={(v) => patch({ declineTbc: v })}
+            />
             {s.declineBinList.map((bin) => (
               <ToggleRow
                 key={bin}
@@ -237,6 +288,39 @@ export function DealsView() {
                 }
               />
             ))}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Field label="Сколько">
+              <Input
+                inputMode="numeric"
+                min={1}
+                max={50}
+                value={s.declineMax}
+                placeholder="1–50"
+                disabled={opsBusy}
+                onChange={(e) =>
+                  patch({
+                    declineMax: e.target.value.replace(/[^\d]/g, "").slice(0, 2),
+                  })
+                }
+              />
+            </Field>
+            <Field label="От">
+              <Input
+                value={s.declineMinAmt}
+                placeholder="USDT"
+                disabled={opsBusy}
+                onChange={(e) => patch({ declineMinAmt: e.target.value })}
+              />
+            </Field>
+            <Field label="До">
+              <Input
+                value={s.declineMaxAmt}
+                placeholder="USDT"
+                disabled={opsBusy}
+                onChange={(e) => patch({ declineMaxAmt: e.target.value })}
+              />
+            </Field>
           </div>
           <RippleButton
             disabled={opsBusy}

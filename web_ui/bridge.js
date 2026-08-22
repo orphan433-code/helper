@@ -55,11 +55,14 @@
           max_empty_list_passes,
           from_pending: !!from_pending,
         }),
-      save_redirect_filters: (skip_bog, visa_only, max_remaining) =>
+      save_redirect_filters: (skip_bog, visa_only, max_remaining, redirect_prefixes) =>
         apiPost("/api/save_redirect_filters", {
           skip_bog: !!skip_bog,
           visa_only: !!visa_only,
           max_remaining: !!max_remaining,
+          redirect_prefixes: Array.isArray(redirect_prefixes)
+            ? redirect_prefixes
+            : [],
         }),
       start_pipeline: (
         max_deals,
@@ -80,6 +83,12 @@
           from_pending: !!from_pending,
         }),
       start_login: () => apiPost("/api/start_login"),
+      start_accept_names: (max_deals, min_amount, max_amount) =>
+        apiPost("/api/start_accept_names", {
+          max_deals,
+          min_amount: min_amount ?? null,
+          max_amount: max_amount ?? null,
+        }),
       stop_job: () => apiPost("/api/stop_job"),
       confirm: (kind) => apiPost("/api/confirm", { kind: kind || "receipts" }),
       cancel_completion_deal: (order_id) =>
@@ -94,10 +103,13 @@
       recovery_exit: () => apiPost("/api/recovery_exit"),
       open_videos_folder: () => apiPost("/api/open_videos_folder"),
       open_screens_folder: () => apiPost("/api/open_screens_folder"),
-      start_decline: (prefixes, tbc) =>
+      start_decline: (prefixes, tbc, max_per_run, min_amount, max_amount) =>
         apiPost("/api/start_decline", {
           prefixes: Array.isArray(prefixes) ? prefixes : [],
           tbc: !!tbc,
+          max_per_run: max_per_run,
+          min_amount: min_amount ?? null,
+          max_amount: max_amount ?? null,
         }),
       start_redirect: (
         trader_ids,
@@ -107,7 +119,8 @@
         deal_status,
         skip_bog,
         visa_only,
-        max_remaining
+        max_remaining,
+        redirect_prefixes
       ) =>
         apiPost("/api/start_redirect", {
           trader_ids,
@@ -118,6 +131,9 @@
           skip_bog: !!skip_bog,
           visa_only: !!visa_only,
           max_remaining: !!max_remaining,
+          redirect_prefixes: Array.isArray(redirect_prefixes)
+            ? redirect_prefixes
+            : [],
         }),
     },
   };

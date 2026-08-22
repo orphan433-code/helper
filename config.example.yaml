@@ -25,10 +25,11 @@ pipeline:
   # true = pending → Approve → банк → чеки (без Accept; сделки уже кинули в pending)
   from_pending: false
 
-# Отдельный флоу: PUT /accept + готовые суммы из GET /_hz/ledger.
-# Старый клик-Accept не ломает. Банк/чеки здесь выкл, пока не включишь.
+# Отдельный флоу: PUT /accept + суммы из GET /_hz/ledger.
+# Банк тот же. Чеки: PUT /upload + PUT /approve, без кликов Money sent.
 api_flow:
   enabled: false
+  accept: true
   run_bank: false
   run_completion: false
   max_deals: 1

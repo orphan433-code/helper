@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-"""Сохранение настроек из GUI в config.yaml."""
+"""Сохранение настроек из GUI."""
 
 from __future__ import annotations
 
 from core.config import load_config, save_config
-from core.decline_bins import DECLINE_BIN_PREFIXES, DECLINE_MAX_PER_RUN
+from core.deals_ui_local import _patch_section, load_local
+from core.decline_bins import (
+    DECLINE_BIN_PREFIXES,
+    DECLINE_DEFAULT_PER_RUN,
+    clamp_decline_limit,
+)
+from core.redirect_bins import REDIRECT_BIN_PREFIXES
 from core.paths import ROOT
+
 DECLINE_CONFIG = ROOT / "platcore-decline" / "config.yaml"
 DECLINE_EXAMPLE = ROOT / "platcore-decline" / "config.example.yaml"
 
@@ -62,23 +69,22 @@ def _load_decline_config() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _save_decline_config(cfg: dict) -> None:
-    import yaml
+def _fmt_opt_amount(raw: object) -> str:
+    if raw in (None, ""):
+        return ""
+    try:
+        n = float(raw)
+    except (TypeError, ValueError):
+        return ""
+    if n == int(n):
+        return str(int(n))
+    return f"{n:g}"
 
-    DECLINE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    with DECLINE_CONFIG.open("w", encoding="utf-8") as fh:
-        yaml.safe_dump(cfg, fh, allow_unicode=True, sort_keys=False)
 
+def redirect_filter_settings(_cfg: dict | None = None) -> dict[str, bool]:
+    from core.deals_ui_local import redirect_ui_filters
 
-def redirect_filter_settings(cfg: dict | None = None) -> dict[str, bool]:
-    """Фильтры редиректа из platcore-decline/config.yaml."""
-    data = cfg if isinstance(cfg, dict) else _load_decline_config()
-    red = data.get("bank_redirect") or {}
-    return {
-        "skip_bog": bool(red.get("skip_bog", False)),
-        "visa_only": bool(red.get("visa_only", False)),
-        "max_remaining": bool(red.get("max_remaining", False)),
-    }
+    return redirect_ui_filters()
 
 
 def apply_redirect_filters(
@@ -87,37 +93,108 @@ def apply_redirect_filters(
     visa_only: bool | None = None,
     max_remaining: bool | None = None,
 ) -> dict[str, bool]:
-    """Сохранить фильтры редиректа в platcore-decline/config.yaml."""
-    cfg = _load_decline_config()
-    red = dict(cfg.get("bank_redirect") or {})
+    """Локально runtime/deals_ui.yaml — не shared config."""
+    fields: dict[str, object] = {}
     if skip_bog is not None:
-        red["skip_bog"] = bool(skip_bog)
+        fields["skip_bog"] = bool(skip_bog)
     if visa_only is not None:
-        red["visa_only"] = bool(visa_only)
+        fields["visa_only"] = bool(visa_only)
     if max_remaining is not None:
-        red["max_remaining"] = bool(max_remaining)
-    cfg["bank_redirect"] = red
-    _save_decline_config(cfg)
-    return redirect_filter_settings(cfg)
+        fields["max_remaining"] = bool(max_remaining)
+    if fields:
+        _patch_section("redirect", **fields)
+    return redirect_filter_settings()
 
 
-def decline_bin_settings(cfg: dict | None = None) -> dict[str, bool]:
-    """Тумблеры BIN отмены из platcore-decline/config.yaml."""
-    data = cfg if isinstance(cfg, dict) else _load_decline_config()
-    decline = data.get("bank_decline") or {}
-    raw = decline.get("bin_toggles") if isinstance(decline, dict) else {}
+def redirect_bin_settings(_cfg: dict | None = None) -> dict[str, bool]:
+    block = load_local().get("redirect") or {}
+    raw = block.get("bin_toggles") if isinstance(block, dict) else {}
+    if not isinstance(raw, dict):
+        raw = {}
+    return {p: bool(raw.get(p, False)) for p in REDIRECT_BIN_PREFIXES}
+
+
+def apply_redirect_bin_filters(
+    toggles: dict[str, bool] | None = None,
+    *,
+    prefixes: list[str] | None = None,
+) -> dict[str, bool]:
+    current = redirect_bin_settings()
+    if prefixes is not None:
+        wanted = {
+            "".join(ch for ch in str(p) if ch.isdigit())
+            for p in prefixes
+            if str(p).strip()
+        }
+        current = {p: p in wanted for p in REDIRECT_BIN_PREFIXES}
+    elif isinstance(toggles, dict):
+        for key, val in toggles.items():
+            digits = "".join(ch for ch in str(key) if ch.isdigit())
+            if digits in REDIRECT_BIN_PREFIXES:
+                current[digits] = bool(val)
+    _patch_section("redirect", bin_toggles=current)
+    return current
+
+
+def redirect_amount_settings(_cfg: dict | None = None) -> dict[str, str]:
+    block = load_local().get("redirect") or {}
+    return {
+        "max_per_run": str(block.get("max_per_run") or "5"),
+        "min_amount": _fmt_opt_amount(block.get("min_amount")),
+        "max_amount": _fmt_opt_amount(block.get("max_amount")),
+    }
+
+
+def apply_redirect_amounts(
+    *,
+    max_per_run: int | str | None = None,
+    min_amount: float | None = None,
+    max_amount: float | None = None,
+    clear_min_amount: bool = False,
+    clear_max_amount: bool = False,
+) -> None:
+    fields: dict[str, object] = {}
+    if max_per_run is not None:
+        fields["max_per_run"] = str(max(1, int(max_per_run)))
+    if clear_min_amount:
+        fields["min_amount"] = ""
+    elif min_amount is not None:
+        fields["min_amount"] = _fmt_opt_amount(min_amount)
+    if clear_max_amount:
+        fields["max_amount"] = ""
+    elif max_amount is not None:
+        fields["max_amount"] = _fmt_opt_amount(max_amount)
+    if fields:
+        _patch_section("redirect", **fields)
+
+
+def decline_bin_settings(_cfg: dict | None = None) -> dict[str, bool]:
+    block = load_local().get("decline") or {}
+    raw = block.get("bin_toggles") if isinstance(block, dict) else {}
     if not isinstance(raw, dict):
         raw = {}
     return {p: bool(raw.get(p, True)) for p in DECLINE_BIN_PREFIXES}
 
 
-def decline_tbc_enabled(cfg: dict | None = None) -> bool:
-    """Тумблер TBC отмены. Нет ключа в конфиге — включён."""
-    data = cfg if isinstance(cfg, dict) else _load_decline_config()
-    decline = data.get("bank_decline") or {}
-    if not isinstance(decline, dict) or "tbc" not in decline:
+def decline_tbc_enabled(_cfg: dict | None = None) -> bool:
+    block = load_local().get("decline") or {}
+    if "tbc" not in block:
         return True
-    return bool(decline.get("tbc"))
+    return bool(block.get("tbc"))
+
+
+def decline_max_per_run(_cfg: dict | None = None) -> int:
+    block = load_local().get("decline") or {}
+    raw = block.get("max_per_run", DECLINE_DEFAULT_PER_RUN)
+    return clamp_decline_limit(raw)
+
+
+def decline_amount_settings(_cfg: dict | None = None) -> dict[str, str]:
+    block = load_local().get("decline") or {}
+    return {
+        "min_amount": _fmt_opt_amount(block.get("min_amount")),
+        "max_amount": _fmt_opt_amount(block.get("max_amount")),
+    }
 
 
 def apply_decline_bin_filters(
@@ -125,11 +202,14 @@ def apply_decline_bin_filters(
     *,
     prefixes: list[str] | None = None,
     tbc: bool | None = None,
+    max_per_run: int | None = None,
+    min_amount: float | None = None,
+    max_amount: float | None = None,
+    clear_min_amount: bool = False,
+    clear_max_amount: bool = False,
 ) -> dict[str, bool]:
-    """Сохранить тумблеры BIN отмены. prefixes = включённые, остальные выкл."""
-    cfg = _load_decline_config()
-    decline = dict(cfg.get("bank_decline") or {})
-    current = decline_bin_settings(cfg)
+    """Локально runtime/deals_ui.yaml — не shared config."""
+    current = decline_bin_settings()
     if prefixes is not None:
         wanted = {
             "".join(ch for ch in str(p) if ch.isdigit())
@@ -142,10 +222,18 @@ def apply_decline_bin_filters(
             digits = "".join(ch for ch in str(key) if ch.isdigit())
             if digits in DECLINE_BIN_PREFIXES:
                 current[digits] = bool(val)
-    decline["bin_toggles"] = current
-    decline["max_per_run"] = DECLINE_MAX_PER_RUN
+    fields: dict[str, object] = {"bin_toggles": current}
+    if max_per_run is not None:
+        fields["max_per_run"] = str(clamp_decline_limit(max_per_run))
     if tbc is not None:
-        decline["tbc"] = bool(tbc)
-    cfg["bank_decline"] = decline
-    _save_decline_config(cfg)
+        fields["tbc"] = bool(tbc)
+    if clear_min_amount:
+        fields["min_amount"] = ""
+    elif min_amount is not None:
+        fields["min_amount"] = _fmt_opt_amount(min_amount)
+    if clear_max_amount:
+        fields["max_amount"] = ""
+    elif max_amount is not None:
+        fields["max_amount"] = _fmt_opt_amount(max_amount)
+    _patch_section("decline", **fields)
     return current

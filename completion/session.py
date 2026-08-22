@@ -34,6 +34,9 @@ class SessionDeal:
     proof_path: str = ""
     video_path: str = ""
     error: str = ""
+    task_id: str = ""
+    ledger: dict | None = None
+    give_fiat: str = ""
 
 
 @dataclass
@@ -98,6 +101,9 @@ def build_session(
         ver = d["amount_verify"]
         amount_usdt = float(getattr(accepted, "amount_usdt", 0.0) or 0.0)
         bank_skipped = bool(getattr(accepted, "bank_skipped", False))
+        check = getattr(deal, "amount_check", 0) or 0
+        check_cur = str(getattr(deal, "amount_check_currency", "") or "").strip()
+        give_fiat = f"{float(check):.2f} {check_cur}".strip() if check and check_cur else ""
         deals.append(
             SessionDeal(
                 index=accepted.index,
@@ -114,6 +120,9 @@ def build_session(
                     else DealCompletionState.AWAITING_PROOF
                 ),
                 error="Перевод не выполнен" if bank_skipped else "",
+                task_id=str(deal.task_id or accepted.fingerprint or ""),
+                ledger=dict(accepted.ledger) if accepted.ledger else None,
+                give_fiat=give_fiat,
             )
         )
     return CompletionSession(

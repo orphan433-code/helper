@@ -406,6 +406,11 @@ def apply_matches(
         )
 
 
+def _api_http_complete(cfg: dict | None) -> bool:
+    flow = (cfg or {}).get("api_flow") or {}
+    return bool(flow.get("enabled") and flow.get("run_completion"))
+
+
 async def _complete_one_matched_deal(
     deal: SessionDeal,
     *,
@@ -414,6 +419,7 @@ async def _complete_one_matched_deal(
     fake_money_sent: bool,
     page_by_order: dict[str, Page],
     force_reopen: bool = False,
+    cfg: dict | None = None,
 ) -> None:
     """Одна сделка: upload + Money sent + Confirmed. Ошибка → FAILED + UI retry."""
     proof = Path(deal.proof_path or "")
@@ -444,8 +450,9 @@ async def _complete_one_matched_deal(
             )
             return
 
+    http_complete = _api_http_complete(cfg)
     page = page_by_order.get(deal.order_id)
-    if page is None or page.is_closed():
+    if not http_complete and (page is None or page.is_closed()):
         deal.state = DealCompletionState.FAILED
         deal.error = "вкладка PlatCore закрыта"
         error(f"#{deal.index}: вкладка PlatCore закрыта")
@@ -470,18 +477,6 @@ async def _complete_one_matched_deal(
 
     raise_if_stopped()
     try:
-        if force_reopen:
-            info(f"#{deal.index}: reopen сделки → Approve → dropzone")
-            await reopen_deal_for_completion(page, timing=timing)
-        else:
-            try:
-                await ensure_dropzone_on_page(page)
-            except JobStopped:
-                raise
-            except Exception:
-                warn(f"#{deal.index}: dropzone нет — reopen + Approve")
-                await reopen_deal_for_completion(page, timing=timing)
-
         def _progress(msg: str, *, _idx: int = deal.index) -> None:
             notify_completion_progress(
                 session,
@@ -490,19 +485,51 @@ async def _complete_one_matched_deal(
                 active_index=_idx,
             )
 
-        result = await asyncio.wait_for(
-            complete_deal_on_platcore(
-                page,
-                proof,
-                timing=timing,
-                fake_money_sent=fake_money_sent,
-                deal_index=deal.index,
-                account_digits=deal.account_digits,
-                video_path=video,
-                on_progress=_progress,
-            ),
-            timeout=2400.0 if video is not None else 300.0,
-        )
+        if http_complete:
+            from platcore.api_complete import complete_deal_via_api
+
+            info(f"#{deal.index}: API upload + approve, без кликов")
+            result = await asyncio.wait_for(
+                complete_deal_via_api(
+                    task_id=deal.task_id,
+                    order_id=deal.order_id,
+                    account_digits=deal.account_digits,
+                    holder_name=deal.holder_name,
+                    proof=proof,
+                    video=video,
+                    ledger=deal.ledger,
+                    cfg=cfg or {},
+                    fake_money_sent=fake_money_sent,
+                    give_fiat=deal.give_fiat,
+                    on_progress=_progress,
+                ),
+                timeout=2400.0 if video is not None else 180.0,
+            )
+        else:
+            if force_reopen:
+                info(f"#{deal.index}: reopen сделки → Approve → dropzone")
+                await reopen_deal_for_completion(page, timing=timing)
+            else:
+                try:
+                    await ensure_dropzone_on_page(page)
+                except JobStopped:
+                    raise
+                except Exception:
+                    warn(f"#{deal.index}: dropzone нет — reopen + Approve")
+                    await reopen_deal_for_completion(page, timing=timing)
+            result = await asyncio.wait_for(
+                complete_deal_on_platcore(
+                    page,
+                    proof,
+                    timing=timing,
+                    fake_money_sent=fake_money_sent,
+                    deal_index=deal.index,
+                    account_digits=deal.account_digits,
+                    video_path=video,
+                    on_progress=_progress,
+                ),
+                timeout=2400.0 if video is not None else 300.0,
+            )
         deal.state = DealCompletionState.COMPLETED
         deal.error = ""
         how = {
@@ -539,6 +566,7 @@ async def complete_matched_deals(
     timing: HumanTiming,
     fake_money_sent: bool,
     page_by_order: dict[str, Page],
+    cfg: dict | None = None,
 ) -> None:
     ready = [
         d
@@ -565,6 +593,7 @@ async def complete_matched_deals(
                 timing=timing,
                 fake_money_sent=fake_money_sent,
                 page_by_order=page_by_order,
+                cfg=cfg,
             ),
             name=f"complete-{deal.index}",
         )
@@ -720,6 +749,7 @@ async def scan_and_complete_once(
         timing=timing,
         fake_money_sent=fake_money_sent,
         page_by_order=page_by_order,
+        cfg=cfg,
     )
     # После скана+обработки: Отмена только у сделок без чека
     session.cancel_unlocked = True
@@ -846,6 +876,7 @@ async def retry_deal_money_sent(
     timing: HumanTiming,
     fake_money_sent: bool,
     page_by_order: dict[str, Page],
+    cfg: dict | None = None,
 ) -> None:
     """Повтор Money sent для FAILED с уже найденным чеком."""
     deal = next((d for d in session.deals if d.order_id == order_id), None)
@@ -869,6 +900,7 @@ async def retry_deal_money_sent(
         fake_money_sent=fake_money_sent,
         page_by_order=page_by_order,
         force_reopen=True,
+        cfg=cfg,
     )
     if deal.state == DealCompletionState.FAILED:
         notify_completion_progress(
@@ -892,7 +924,7 @@ async def retry_deal_money_sent(
 
 
 async def run_completion_phase(
-    context: BrowserContext,
+    context: BrowserContext | None,
     cfg: dict,
     *,
     accepted_deals: list[AcceptedDeal],
@@ -1070,6 +1102,7 @@ async def _run_completion_phase_body(
                 timing=timing,
                 fake_money_sent=fake_money_sent,
                 page_by_order=page_by_order,
+                cfg=cfg,
             )
             print_session_status(session)
             continue

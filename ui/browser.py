@@ -396,6 +396,7 @@ def create_app() -> Any:
             skip_bog=body.get("skip_bog", False),
             visa_only=body.get("visa_only", False),
             max_remaining=body.get("max_remaining", False),
+            redirect_prefixes=body.get("redirect_prefixes"),
         )
 
     @app.post("/api/start_login")
@@ -415,6 +416,16 @@ def create_app() -> Any:
             from_pending=body.get("from_pending"),
         )
 
+    @app.post("/api/start_accept_names")
+    async def start_accept_names(body: dict[str, Any] | None = None) -> Any:
+        body = body or {}
+        return await _call(
+            "start_accept_names",
+            max_deals=body.get("max_deals"),
+            min_amount=body.get("min_amount"),
+            max_amount=body.get("max_amount"),
+        )
+
     @app.post("/api/start_decline")
     async def start_decline(body: dict[str, Any] | None = None) -> Any:
         body = body or {}
@@ -422,6 +433,9 @@ def create_app() -> Any:
             "start_decline",
             prefixes=body.get("prefixes"),
             tbc=body.get("tbc", False),
+            max_per_run=body.get("max_per_run"),
+            min_amount=body.get("min_amount"),
+            max_amount=body.get("max_amount"),
             bank=body.get("bank"),
         )
 
@@ -437,6 +451,7 @@ def create_app() -> Any:
             skip_bog=body.get("skip_bog", False),
             visa_only=body.get("visa_only", False),
             max_remaining=body.get("max_remaining", False),
+            redirect_prefixes=body.get("redirect_prefixes"),
         )
 
     @app.post("/api/stop_job")
