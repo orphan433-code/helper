@@ -12,6 +12,7 @@ type Api = {
     allow_mastercard: boolean,
     max_empty_list_passes: number,
     from_pending: boolean,
+    pipeline_bin_prefixes?: string[],
   ) => Promise<Record<string, unknown>>;
   save_redirect_filters: (
     skip_bog: boolean,
@@ -27,6 +28,7 @@ type Api = {
     allow_mastercard: boolean,
     max_empty_list_passes: number,
     from_pending: boolean,
+    pipeline_bin_prefixes?: string[],
   ) => Promise<Record<string, unknown>>;
   start_login: () => Promise<Record<string, unknown>>;
   start_accept_names: (
@@ -130,6 +132,14 @@ export async function serverPost(path: string, body?: unknown) {
     headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+  if (!r.ok) throw new Error(await r.text());
+  const ct = r.headers.get("content-type") || "";
+  if (ct.includes("application/json")) return r.json();
+  return {};
+}
+
+export async function serverGet(path: string) {
+  const r = await fetch(path, { method: "GET", credentials: "same-origin" });
   if (!r.ok) throw new Error(await r.text());
   const ct = r.headers.get("content-type") || "";
   if (ct.includes("application/json")) return r.json();

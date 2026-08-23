@@ -15,10 +15,12 @@ from playwright.async_api import Page
 from core.deal_bridge import save_pending_deal
 from core.logkit import info, ok, section, warn
 from core.models import RowPreview, TzkDeal
+from core.deals_ui_local import pipeline_ui_bin_prefixes
 from core.validators import (
     PanicError,
     deal_to_dict,
     session_requisites_key,
+    skip_reason_for_card_bin,
     skip_reason_for_card_brand,
 )
 from platcore.api_client import (
@@ -127,6 +129,7 @@ def _skip_row(
     max_amount: float | None,
     allow_visa: bool,
     allow_mc: bool,
+    bin_prefixes: list[str] | None,
     currencies: list[str],
     requisites_in_run: dict[str, int],
 ) -> str | None:
@@ -136,11 +139,16 @@ def _skip_row(
     if max_amount is not None and usdt > max_amount:
         return f"USDT {usdt:g} > лимита {max_amount:g}"
     card = _row_card(row)
-    skip_card = skip_reason_for_card_brand(
-        card, allow_visa=allow_visa, allow_mastercard=allow_mc
-    )
-    if skip_card:
-        return skip_card
+    if bin_prefixes:
+        skip_bin = skip_reason_for_card_bin(card, bin_prefixes)
+        if skip_bin:
+            return skip_bin
+    else:
+        skip_card = skip_reason_for_card_brand(
+            card, allow_visa=allow_visa, allow_mastercard=allow_mc
+        )
+        if skip_card:
+            return skip_card
     code = _row_fiat_code(row)
     if currencies and code not in currencies:
         return f"валюта {code or '—'} не в фильтре ({', '.join(currencies)})"
@@ -463,7 +471,7 @@ async def accept_deals_loop_api(
     val_cfg = cfg["validation"]
     stage1 = cfg.get("stage1") or {}
 
-    max_deals = int(flow.get("max_deals") or 1)
+    max_deals = int(pipe_cfg.get("max_deals_per_run") or flow.get("max_deals") or 5)
     max_empty_passes = max(1, int(pipe_cfg.get("max_empty_list_passes", 2)))
     spawn_delay = float(pipe_cfg.get("spawn_deal_delay_sec", 2.0))
     fake_accept = bool(stage1.get("fake_accept", False))
@@ -476,9 +484,12 @@ async def accept_deals_loop_api(
     token = await resolve_token(cfg, base_url)
     info(f"Токен ок, HTTP {base_url}")
 
-    section(f"API Accept: {max_deals} сделка, PUT /accept")
+    bin_prefixes = pipeline_ui_bin_prefixes()
+    section(f"API Accept: до {max_deals} сделок, PUT /accept")
     if currencies:
         info(f"Валюты: {', '.join(currencies)}")
+    if bin_prefixes:
+        info(f"BIN: только {', '.join(p + '*' for p in bin_prefixes)} (Visa/MC не смотрим)")
     if fake_accept:
         warn("fake_accept — PUT не уйдёт")
 
@@ -513,6 +524,7 @@ async def accept_deals_loop_api(
                 max_amount=max_amount,
                 allow_visa=allow_visa,
                 allow_mc=allow_mc,
+                bin_prefixes=bin_prefixes,
                 currencies=currencies,
                 requisites_in_run=requisites_in_run,
             )
@@ -593,6 +605,8 @@ def _ui_deal_row(row: dict[str, Any], *, ok_flag: bool, error: str = "") -> dict
         "ok": bool(ok_flag),
         "error": (error or "").strip(),
     }
+
+
 
 
 async def accept_matching_names_loop(

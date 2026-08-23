@@ -38,9 +38,11 @@ from ui.progress import (
     set_completion_progress_handler,
     set_pipeline_progress_handler,
 )
+from core.pipeline_bins import PIPELINE_BIN_PREFIXES
 from core.accept_names import ACCEPT_NAMES_DEFAULT_MAX
 from ui.settings import (
     apply_gui_settings,
+    apply_pipeline_bin_filters,
     apply_redirect_filters,
     apply_redirect_bin_filters,
     apply_decline_bin_filters,
@@ -48,6 +50,7 @@ from ui.settings import (
     redirect_bin_settings,
     decline_tbc_enabled,
     decline_max_per_run,
+    pipeline_bin_settings,
     decline_amount_settings,
     redirect_amount_settings,
     apply_redirect_amounts,
@@ -298,6 +301,7 @@ class TzkApi:
         redir_amt = redirect_amount_settings()
         bins = decline_bin_settings()
         amounts = decline_amount_settings()
+        pipe_bins = pipeline_bin_settings()
         adb_text, adb_ok = _adb_status_text()
         serial = bank_settings(cfg).get("adb_serial") or ""
         return {
@@ -308,6 +312,8 @@ class TzkApi:
             "allow_visa": bool(val.get("allow_visa", True)),
             "allow_mastercard": bool(val.get("allow_mastercard", False)),
             "from_pending": bool(pipe.get("from_pending", False)),
+            "pipeline_bin_list": list(PIPELINE_BIN_PREFIXES),
+            "pipeline_bin_toggles": pipe_bins,
             "redirect_skip_bog": bool(redir.get("skip_bog", False)),
             "redirect_visa_only": bool(redir.get("visa_only", False)),
             "redirect_max_remaining": bool(redir.get("max_remaining", False)),
@@ -338,6 +344,8 @@ class TzkApi:
             "recovery_enabled": self._pending_recovery is not None
             and not self._pending_recovery.is_set(),
             "app_version": read_version(),
+            "agent_configured": self._agent_configured(),
+            "agent_model": self._agent_model(),
         }
 
     def poll_logs(self) -> list[dict[str, Any]]:
@@ -362,6 +370,7 @@ class TzkApi:
         allow_mastercard: bool = False,
         max_empty_list_passes: int | None = None,
         from_pending: bool = False,
+        pipeline_bin_prefixes: list[str] | str | None = None,
     ) -> dict[str, Any]:
         try:
             min_amt = self._parse_amount(min_amount)
@@ -380,11 +389,28 @@ class TzkApi:
                 max_empty_list_passes=empty_passes,
                 from_pending=bool(from_pending),
             )
+            if pipeline_bin_prefixes is not None:
+                if isinstance(pipeline_bin_prefixes, str):
+                    raw_pb: list[Any] = pipeline_bin_prefixes.split(",")
+                elif isinstance(pipeline_bin_prefixes, (list, tuple)):
+                    raw_pb = list(pipeline_bin_prefixes)
+                else:
+                    raw_pb = []
+                wanted = {
+                    "".join(ch for ch in str(x) if ch.isdigit())
+                    for x in raw_pb
+                    if str(x).strip()
+                }
+                apply_pipeline_bin_filters(
+                    prefixes=[p for p in PIPELINE_BIN_PREFIXES if p in wanted]
+                )
             brands = []
             if allow_visa:
                 brands.append("Visa")
             if allow_mastercard:
                 brands.append("MC")
+            saved_bins = pipeline_bin_settings()
+            active_bins = [p for p in PIPELINE_BIN_PREFIXES if saved_bins.get(p)]
             mode = "pending→Approve→банк→чеки" if from_pending else "new→Accept→банк"
             msg = (
                 f"[OK] Сохранено: {max_deals} сделок, "
@@ -393,6 +419,8 @@ class TzkApi:
             if min_amt is not None or max_amt is not None:
                 msg += f", сумма {min_amt or '—'}–{max_amt or '—'}"
             msg += f", карты: {', '.join(brands) if brands else 'нет'}"
+            if active_bins:
+                msg += f", BIN: {', '.join(active_bins)}"
             return self._ok(message=msg + "\n")
         except (ValueError, TypeError) as exc:
             return self._err(f"Некорректное значение: {exc}")
@@ -457,6 +485,7 @@ class TzkApi:
         allow_mastercard: bool = False,
         max_empty_list_passes: int | None = None,
         from_pending: bool | None = None,
+        pipeline_bin_prefixes: list[str] | str | None = None,
     ) -> dict[str, Any]:
         if self._running:
             return self._err("Уже выполняется")
@@ -483,13 +512,32 @@ class TzkApi:
                 max_empty_list_passes=empty_passes,
                 from_pending=pending,
             )
+            if pipeline_bin_prefixes is not None:
+                if isinstance(pipeline_bin_prefixes, str):
+                    raw_pb: list[Any] = pipeline_bin_prefixes.split(",")
+                elif isinstance(pipeline_bin_prefixes, (list, tuple)):
+                    raw_pb = list(pipeline_bin_prefixes)
+                else:
+                    raw_pb = []
+                wanted = {
+                    "".join(ch for ch in str(x) if ch.isdigit())
+                    for x in raw_pb
+                    if str(x).strip()
+                }
+                apply_pipeline_bin_filters(
+                    prefixes=[p for p in PIPELINE_BIN_PREFIXES if p in wanted]
+                )
         except (ValueError, TypeError) as exc:
             return self._err(f"Некорректное значение: {exc}")
+        active_bins = [
+            p for p in PIPELINE_BIN_PREFIXES if pipeline_bin_settings().get(p)
+        ]
         mode = "pending→Approve→банк→чеки" if pending else "Accept→банк→чеки"
         self._status = "Обрабатываю сделки…"
         self._set_running(True, "pipeline")
+        bin_note = f", BIN {', '.join(active_bins)}" if active_bins else ""
         self._push_log(
-            f"Запуск цикла ({mode}, до {deals} сделок, стоп после {empty_passes} пустых кругов)",
+            f"Запуск цикла ({mode}, до {deals} сделок, стоп после {empty_passes} пустых кругов{bin_note})",
             service="pipeline",
             status="section",
         )
@@ -559,6 +607,10 @@ class TzkApi:
         min_amount: int | float | str | None = None,
         max_amount: int | float | str | None = None,
         bank: str | list[str] | None = None,
+        max_remaining: bool = False,
+        max_remaining_hours: float | None = None,
+        card_prefixes: list[str] | str | None = None,
+        all_cards: bool = False,
     ) -> dict[str, Any]:
         # pywebview: start_decline(["558328", …]) / start_decline(list, tbc)
         if isinstance(prefixes, bool) and bank is None:
@@ -585,15 +637,31 @@ class TzkApi:
         }
         bins = [p for p in DECLINE_BIN_PREFIXES if p in wanted]
         include_tbc = bool(tbc)
-        if not bins and not include_tbc:
-            if bank:
+        raw_card: list[Any]
+        if isinstance(card_prefixes, str):
+            raw_card = card_prefixes.split(",")
+        elif isinstance(card_prefixes, (list, tuple)):
+            raw_card = list(card_prefixes)
+        else:
+            raw_card = []
+        from agent.bin_resolve import merge_decline_bins_and_prefixes
+
+        _bins2, card_prefs = merge_decline_bins_and_prefixes([], raw_card)
+        if not bins and not include_tbc and not card_prefs:
+            if all_cards:
+                pass
+            elif bank:
                 return self._start_decline_or_redirect(
                     redirect=False,
                     decline_bank=str(bank or "tbc"),
                 )
-            return self._err("Включи TBC или хотя бы один BIN")
-        limit = clamp_decline_limit(
-            max_per_run if max_per_run not in (None, "") else decline_max_per_run()
+            return self._err("Включи TBC, BIN или префикс карты (5598…)")
+        limit = (
+            0
+            if max_per_run in (0, "0", 0.0)
+            else clamp_decline_limit(
+                max_per_run if max_per_run not in (None, "") else decline_max_per_run()
+            )
         )
         try:
             min_a = (
@@ -623,10 +691,14 @@ class TzkApi:
         return self._start_decline_or_redirect(
             redirect=False,
             decline_prefixes=bins,
+            decline_card_prefixes=card_prefs,
             decline_tbc=include_tbc,
             max_per_run=limit,
             min_amount=min_a,
             max_amount=max_a,
+            max_remaining=bool(max_remaining),
+            max_remaining_hours=max_remaining_hours,
+            all_cards=bool(all_cards),
         )
 
     def start_redirect(
@@ -640,6 +712,8 @@ class TzkApi:
         visa_only: bool = False,
         max_remaining: bool = False,
         redirect_prefixes: list[str] | str | None = None,
+        redirect_card_prefixes: list[str] | str | None = None,
+        max_remaining_hours: float | None = None,
     ) -> dict[str, Any]:
         """Редирект сделок: сумма + лимит, выбранные traderId равномерно.
 
@@ -671,8 +745,8 @@ class TzkApi:
             )
         except (TypeError, ValueError) as exc:
             return self._err(f"Некорректные параметры редиректа: {exc}")
-        if max_n is not None and max_n < 1:
-            return self._err("Количество редиректов должно быть ≥ 1")
+        if max_n is not None and max_n < 0:
+            return self._err("Количество редиректов не может быть отрицательным")
         if isinstance(redirect_prefixes, str):
             raw_rp: list[Any] = redirect_prefixes.split(",")
         elif isinstance(redirect_prefixes, (list, tuple)):
@@ -685,13 +759,32 @@ class TzkApi:
             if str(x).strip()
         }
         redirect_bins = [p for p in REDIRECT_BIN_PREFIXES if p in rp_wanted]
+        raw_rc: list[Any]
+        if isinstance(redirect_card_prefixes, str):
+            raw_rc = redirect_card_prefixes.split(",")
+        elif isinstance(redirect_card_prefixes, (list, tuple)):
+            raw_rc = list(redirect_card_prefixes)
+        else:
+            raw_rc = []
+        from agent.bin_resolve import merge_redirect_bins_and_prefixes
+
+        _rb2, redirect_card_prefs = merge_redirect_bins_and_prefixes([], raw_rc)
+        explicit_bins = bool(redirect_bins or redirect_card_prefs or raw_rp)
+        filter_only = bool(
+            visa_only
+            or skip_bog
+            or max_remaining
+            or min_a is not None
+            or max_a is not None
+        )
         try:
             apply_redirect_filters(
                 skip_bog=bool(skip_bog),
                 visa_only=bool(visa_only),
                 max_remaining=bool(max_remaining),
             )
-            apply_redirect_bin_filters(prefixes=redirect_bins)
+            if explicit_bins:
+                apply_redirect_bin_filters(prefixes=redirect_bins)
             apply_redirect_amounts(
                 max_per_run=max_n,
                 min_amount=min_a,
@@ -701,6 +794,9 @@ class TzkApi:
             )
         except Exception:
             pass
+        if not explicit_bins and not filter_only:
+            saved_bins = redirect_bin_settings()
+            redirect_bins = [p for p in REDIRECT_BIN_PREFIXES if saved_bins.get(p)]
         return self._start_decline_or_redirect(
             redirect=True,
             trader_ids=ids,
@@ -712,7 +808,247 @@ class TzkApi:
             visa_only=bool(visa_only),
             max_remaining=bool(max_remaining),
             redirect_prefixes=redirect_bins,
+            redirect_card_prefixes=redirect_card_prefs,
+            max_remaining_hours=max_remaining_hours,
         )
+
+    @staticmethod
+    def _agent_configured() -> bool:
+        from agent.config import agent_configured
+
+        return agent_configured()
+
+    @staticmethod
+    def _agent_model() -> str:
+        from agent.config import agent_settings
+
+        return str(agent_settings().get("model") or "")
+
+    def _agent_ui_context(self, override: dict[str, Any] | None = None) -> dict[str, Any]:
+        st = self.get_state()
+        decline_bins = [
+            p
+            for p in (st.get("decline_bin_list") or [])
+            if (st.get("decline_bin_toggles") or {}).get(p)
+        ]
+        redirect_bins = [
+            p
+            for p in (st.get("redirect_bin_list") or [])
+            if (st.get("redirect_bin_toggles") or {}).get(p)
+        ]
+        traders: list[dict[str, str]] = []
+        selected_ids: list[str] = []
+        try:
+            import sys
+
+            decline_dir = str(DECLINE_DIR)
+            if decline_dir not in sys.path:
+                sys.path.insert(0, decline_dir)
+            import decline_by_bank_api as dapi
+
+            cfg = load_config()
+            for label, tid in dapi._redirect_traders(cfg):
+                traders.append({"label": label, "id": tid})
+        except Exception:
+            traders = []
+        ctx = {
+            "decline_bins": decline_bins,
+            "decline_tbc": bool(st.get("decline_tbc")),
+            "decline_min_amount": st.get("decline_min_amount") or "",
+            "decline_max_amount": st.get("decline_max_amount") or "",
+            "redirect_bins": redirect_bins,
+            "redirect_skip_bog": bool(st.get("redirect_skip_bog")),
+            "redirect_visa_only": bool(st.get("redirect_visa_only")),
+            "redirect_max_remaining": bool(st.get("redirect_max_remaining")),
+            "redirect_min_amount": st.get("redirect_min_amount") or "",
+            "redirect_max_amount": st.get("redirect_max_amount") or "",
+            "redirect_selected_trader_ids": selected_ids,
+            "available_decline_bins": list(DECLINE_BIN_PREFIXES),
+            "available_redirect_bins": list(REDIRECT_BIN_PREFIXES),
+            "available_traders": traders,
+        }
+        if isinstance(override, dict):
+            ctx.update(override)
+        return ctx
+
+    def _ensure_agent_trace(self) -> None:
+        if getattr(self, "_agent_trace_registered", False):
+            return
+        from agent.trace import register_trace_sink
+
+        register_trace_sink(lambda msg: self._push_log(msg, service="agent"))
+        self._agent_trace_registered = True
+
+    def agent_parse(
+        self,
+        text: str = "",
+        ui_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from agent.history import lookup
+        from agent.parser import parse_command_detailed
+        from agent.trace import agent_trace
+
+        self._ensure_agent_trace()
+        cleaned = str(text or "").strip()
+        hit = lookup(cleaned)
+        cache_hit = bool(hit and isinstance(hit.get("plan"), dict))
+        if not self._agent_configured() and not cache_hit:
+            return self._err(
+                "Gemini API ключ не задан — добавь agent.gemini_api_key в config.yaml"
+            )
+        try:
+            ctx = self._agent_ui_context(ui_context)
+            plan, meta = parse_command_detailed(cleaned, ctx)
+            usage = meta.get("usage") or {}
+            cached = bool(meta.get("cached"))
+            if cached:
+                debug = [
+                    "Источник: история (кеш) — Gemini не вызывался",
+                    f"Plan: {plan.human_summary()}",
+                ]
+                agent_trace(f"parse OK · cache HIT · {plan.human_summary()}")
+                self._push_log(
+                    f"AI из истории: {plan.human_summary()}",
+                    service="agent",
+                    status="section",
+                )
+            else:
+                debug = [
+                    f"Gemini model: {meta.get('model')}",
+                    f"Tokens: prompt={usage.get('promptTokenCount')} "
+                    f"out={usage.get('candidatesTokenCount')} "
+                    f"total={usage.get('totalTokenCount')}",
+                    f"Plan: {plan.human_summary()}",
+                ]
+                agent_trace(f"parse OK · total tokens={usage.get('totalTokenCount')}")
+                self._push_log(
+                    f"AI разбор: {plan.human_summary()}",
+                    service="agent",
+                    status="section",
+                )
+            return {
+                "ok": True,
+                "plan": plan.to_dict(),
+                "summary": plan.human_summary(),
+                "confidence": plan.confidence,
+                "cached": cached,
+                "debug": debug,
+                "usage": usage,
+            }
+        except Exception as exc:
+            traceback.print_exc()
+            return self._err(str(exc))
+
+    def agent_history(self, limit: int = 30) -> dict[str, Any]:
+        from agent.history import list_history
+
+        return {"ok": True, "items": list_history(limit=limit)}
+
+    def agent_history_clear(self) -> dict[str, Any]:
+        from agent.history import clear_history
+
+        n = clear_history(keep_favorites=True)
+        self._push_log(
+            f"AI история очищена ({n}, избранные сохранены)",
+            service="agent",
+            status="section",
+        )
+        return {"ok": True, "cleared": n}
+
+    def agent_history_remove(self, text: str = "") -> dict[str, Any]:
+        from agent.history import remove_entry
+
+        ok = remove_entry(str(text or ""))
+        return {"ok": True, "removed": ok}
+
+    def agent_history_favorite(
+        self, text: str = "", favorite: bool = True
+    ) -> dict[str, Any]:
+        from agent.history import set_favorite
+
+        ok = set_favorite(str(text or ""), bool(favorite))
+        return {"ok": True, "updated": ok, "favorite": bool(favorite)}
+
+    def agent_preview(
+        self,
+        plan: dict[str, Any] | None = None,
+        ui_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from agent.deals_query import preview_plan_sync
+        from agent.schema import ActionPlan
+        from agent.trace import agent_trace
+
+        self._ensure_agent_trace()
+        if not isinstance(plan, dict):
+            return self._err("Нет plan для preview")
+        try:
+            merged = ActionPlan.from_dict(plan).merge_agent_context(
+                self._agent_ui_context(ui_context)
+            ).finalize()
+            err = merged.validate()
+            if err:
+                return self._err(err)
+            payload = preview_plan_sync(merged)
+            debug = [
+                f"Preview: {payload.get('summary')}",
+                f"Token source: {payload.get('token_source')}",
+            ]
+            for step in payload.get("steps") or []:
+                if isinstance(step, dict):
+                    line = f"{step.get('step')}: {step.get('detail')}"
+                    debug.append(line)
+                    agent_trace(f"preview · {line}")
+                    self._push_log(
+                        f"AI preview · {line}",
+                        service="agent",
+                    )
+            agent_trace(f"preview OK · matched={payload.get('matched')}")
+            self._push_log(
+                str(payload.get("summary") or "AI preview готов"),
+                service="agent",
+                status="section",
+            )
+            return {"ok": True, "debug": debug, **payload}
+        except SystemExit:
+            return self._err(
+                "Нет токена PlatCore. Залогинься через «Вход» или задай PLATCORE_TOKEN."
+            )
+        except Exception as exc:
+            traceback.print_exc()
+            from core.validators import PanicError
+
+            if isinstance(exc, PanicError):
+                return self._err(str(exc))
+            return self._err(str(exc))
+
+    def agent_execute(
+        self,
+        plan: dict[str, Any] | None = None,
+        ui_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from agent.executor import execute_plan
+        from agent.schema import ActionPlan
+
+        if self._running:
+            return self._err("Уже выполняется другая задача")
+        if not isinstance(plan, dict):
+            return self._err("Нет plan для execute")
+        try:
+            merged = ActionPlan.from_dict(plan).merge_agent_context(
+                self._agent_ui_context(ui_context)
+            ).finalize()
+            err = merged.validate()
+            if err:
+                return self._err(err)
+            self._push_log(
+                f"AI запуск: {merged.human_summary()}",
+                service="agent",
+                status="section",
+            )
+            return execute_plan(self, merged)
+        except Exception as exc:
+            traceback.print_exc()
+            return self._err(str(exc))
 
     def _start_decline_or_redirect(
         self,
@@ -725,11 +1061,15 @@ class TzkApi:
         deal_status: str = "new",
         decline_bank: str = "tbc",
         decline_prefixes: list[str] | None = None,
+        decline_card_prefixes: list[str] | None = None,
         decline_tbc: bool = False,
         skip_bog: bool = False,
         visa_only: bool = False,
         max_remaining: bool = False,
         redirect_prefixes: list[str] | None = None,
+        redirect_card_prefixes: list[str] | None = None,
+        max_remaining_hours: float | None = None,
+        all_cards: bool = False,
     ) -> dict[str, Any]:
         if self._running:
             return self._err("Уже выполняется")
@@ -762,14 +1102,23 @@ class TzkApi:
             if visa_only:
                 filter_bits.append("только Visa")
             if max_remaining:
-                filter_bits.append(f"остаток < {REDIRECT_MAX_REMAINING_HOURS:g}ч")
+                filter_bits.append(
+                    f"остаток < {(max_remaining_hours or REDIRECT_MAX_REMAINING_HOURS):g}ч"
+                )
             rp = [
                 p
                 for p in REDIRECT_BIN_PREFIXES
                 if p in (redirect_prefixes or [])
             ]
+            rc = [
+                "".join(ch for ch in str(p) if ch.isdigit())
+                for p in (redirect_card_prefixes or [])
+                if str(p).strip()
+            ]
             if rp:
                 filter_bits.append("BIN " + ", ".join(rp))
+            if rc:
+                filter_bits.append("карты " + ", ".join(p + "*" for p in rc))
             filter_note = ", ".join(filter_bits) if filter_bits else "все подряд"
             self._status = f"Редирект {status_word}-сделок…"
             self._push_log(
@@ -779,23 +1128,50 @@ class TzkApi:
                 status="section",
             )
         else:
-            if prefixes or decline_tbc:
+            card_prefs = [
+                "".join(ch for ch in str(p) if ch.isdigit())
+                for p in (decline_card_prefixes or [])
+                if str(p).strip()
+            ]
+            if prefixes or decline_tbc or card_prefs:
                 parts = []
                 if decline_tbc:
                     parts.append("TBC")
                 if prefixes:
                     parts.append(", ".join(prefixes))
+                if card_prefs:
+                    parts.append(" ".join(p + "*" for p in card_prefs))
                 bank_word = " + ".join(parts)
-                n = clamp_decline_limit(max_per_run)
+                n = 0 if max_per_run == 0 else clamp_decline_limit(max_per_run)
                 amt_bits = []
                 if min_amount is not None:
                     amt_bits.append(f"от {min_amount:g}")
                 if max_amount is not None:
                     amt_bits.append(f"до {max_amount:g}")
                 amt_note = f" · {' '.join(amt_bits)} USDT" if amt_bits else ""
-                self._status = f"Отменяю сделки ({bank_word}, до {n})…"
+                limit_word = "все подходящие" if n == 0 else f"первые {n}"
+                self._status = f"Отменяю сделки ({bank_word}, {limit_word})…"
                 self._push_log(
-                    f"Отмена: {bank_word} · сорт по remaining · первые {n}{amt_note}",
+                    f"Отмена: {bank_word} · сорт по remaining · {limit_word}{amt_note}",
+                    service="decline",
+                    status="section",
+                )
+            elif all_cards:
+                n = 0 if max_per_run == 0 else clamp_decline_limit(max_per_run)
+                amt_bits = []
+                if min_amount is not None:
+                    amt_bits.append(f"от {min_amount:g}")
+                if max_amount is not None:
+                    amt_bits.append(f"до {max_amount:g}")
+                if max_remaining:
+                    amt_bits.append(
+                        f"остаток < {(max_remaining_hours or REDIRECT_MAX_REMAINING_HOURS):g}ч"
+                    )
+                amt_note = f" · {' '.join(amt_bits)}" if amt_bits else ""
+                limit_word = "все подходящие" if n == 0 else f"первые {n}"
+                self._status = f"Отменяю сделки (все карты, {limit_word})…"
+                self._push_log(
+                    f"Отмена: все карты · сорт по remaining · {limit_word}{amt_note}",
                     service="decline",
                     status="section",
                 )
@@ -823,11 +1199,23 @@ class TzkApi:
                 "deal_status": deal_status,
                 "decline_bank": bank_key,
                 "decline_prefixes": prefixes,
+                "decline_card_prefixes": [
+                    "".join(ch for ch in str(p) if ch.isdigit())
+                    for p in (decline_card_prefixes or [])
+                    if str(p).strip()
+                ],
                 "decline_tbc": bool(decline_tbc),
                 "skip_bog": skip_bog,
                 "visa_only": visa_only,
                 "max_remaining": max_remaining,
+                "max_remaining_hours": max_remaining_hours,
                 "redirect_prefixes": redirect_prefixes or [],
+                "redirect_card_prefixes": [
+                    "".join(ch for ch in str(p) if ch.isdigit())
+                    for p in (redirect_card_prefixes or [])
+                    if str(p).strip()
+                ],
+                "all_cards": bool(all_cards),
             },
             name=f"tzk-{mode}",
             daemon=True,
@@ -894,7 +1282,7 @@ class TzkApi:
 
     def cancel_completion_deal(self, order_id: str) -> dict[str, Any]:
         """Отмена сделки без чека (dispute) — только в фазе ожидания чеков."""
-        oid = str(order_id or "").strip()
+        oid = self._resolve_completion_order_id(order_id)
         if not oid:
             return self._err("order_id пустой")
         if self._pending_confirm is None or self._pending_confirm.is_set():
@@ -908,7 +1296,7 @@ class TzkApi:
 
     def retry_completion_deal(self, order_id: str) -> dict[str, Any]:
         """Повтор Money sent для сделки с ошибкой (чек уже есть)."""
-        oid = str(order_id or "").strip()
+        oid = self._resolve_completion_order_id(order_id)
         if not oid:
             return self._err("order_id пустой")
         if self._pending_confirm is None or self._pending_confirm.is_set():
@@ -922,7 +1310,7 @@ class TzkApi:
 
     def rescan_completion_deal(self, order_id: str) -> dict[str, Any]:
         """Сбросить чек у сделки — положить новый файл и снова «Загрузить»."""
-        oid = str(order_id or "").strip()
+        oid = self._resolve_completion_order_id(order_id)
         if not oid:
             return self._err("order_id пустой")
         if self._pending_confirm is None or self._pending_confirm.is_set():
@@ -933,6 +1321,23 @@ class TzkApi:
         self._pending_confirm.set()
         self._pending_confirm = None
         return self._ok()
+
+    def _resolve_completion_order_id(self, raw: str) -> str:
+        """Привести order_id к каноническому виду из активной сессии чеков."""
+        oid = str(raw or "").strip()
+        if not oid:
+            return ""
+        try:
+            from completion.phase import get_active_completion_session
+            from completion.session import find_session_deal
+
+            session, _ = get_active_completion_session()
+            deal = find_session_deal(session, oid)
+            if deal and deal.order_id:
+                return deal.order_id
+        except Exception:
+            pass
+        return oid
 
     def preview_receipts(self) -> dict[str, Any]:
         """Dry-scan папки чеков: что уже найдено до нажатия «Загрузить»."""
@@ -1255,11 +1660,15 @@ class TzkApi:
         deal_status: str = "new",
         decline_bank: str = "tbc",
         decline_prefixes: list[str] | None = None,
+        decline_card_prefixes: list[str] | None = None,
         decline_tbc: bool = False,
         skip_bog: bool = False,
         visa_only: bool = False,
         max_remaining: bool = False,
         redirect_prefixes: list[str] | None = None,
+        redirect_card_prefixes: list[str] | None = None,
+        max_remaining_hours: float | None = None,
+        all_cards: bool = False,
     ) -> None:
         begin_job()
         saw_ui_result = False
@@ -1285,16 +1694,22 @@ class TzkApi:
                 cmd.append("--visa-only")
             if max_remaining:
                 cmd.append("--max-remaining")
-                cmd.extend(
-                    ["--max-remaining-hours", str(REDIRECT_MAX_REMAINING_HOURS)]
-                )
+                hours = max_remaining_hours or REDIRECT_MAX_REMAINING_HOURS
+                cmd.extend(["--max-remaining-hours", str(hours)])
             rp = [
                 p
                 for p in REDIRECT_BIN_PREFIXES
                 if p in (redirect_prefixes or [])
             ]
+            rc = [
+                "".join(ch for ch in str(p) if ch.isdigit())
+                for p in (redirect_card_prefixes or [])
+                if str(p).strip()
+            ]
             for p in rp:
                 cmd.extend(["--redirect-prefix", p])
+            for p in rc:
+                cmd.extend(["--redirect-card-prefix", p])
         else:
             prefixes = [
                 "".join(ch for ch in str(p) if ch.isdigit())
@@ -1302,17 +1717,40 @@ class TzkApi:
                 if str(p).strip()
             ]
             prefixes = [p for p in prefixes if p in DECLINE_BIN_PREFIXES]
-            if prefixes or decline_tbc:
+            card_prefs = [
+                "".join(ch for ch in str(p) if ch.isdigit())
+                for p in (decline_card_prefixes or [])
+                if str(p).strip()
+            ]
+            if prefixes or decline_tbc or card_prefs:
                 for p in prefixes:
                     cmd.extend(["--prefix", p])
+                for p in card_prefs:
+                    cmd.extend(["--card-prefix", p])
                 if decline_tbc:
                     cmd.append("--tbc")
-                n = clamp_decline_limit(max_per_run)
+                n = 0 if max_per_run == 0 else clamp_decline_limit(max_per_run)
                 cmd.extend(["--max-per-run", str(n)])
                 if min_amount is not None:
                     cmd.extend(["--min-amount", str(min_amount)])
                 if max_amount is not None:
                     cmd.extend(["--max-amount", str(max_amount)])
+                if max_remaining:
+                    cmd.append("--max-remaining")
+                    hours = max_remaining_hours or REDIRECT_MAX_REMAINING_HOURS
+                    cmd.extend(["--max-remaining-hours", str(hours)])
+            elif all_cards:
+                n = 0 if max_per_run == 0 else clamp_decline_limit(max_per_run)
+                cmd.append("--all-cards")
+                cmd.extend(["--max-per-run", str(n)])
+                if min_amount is not None:
+                    cmd.extend(["--min-amount", str(min_amount)])
+                if max_amount is not None:
+                    cmd.extend(["--max-amount", str(max_amount)])
+                if max_remaining:
+                    cmd.append("--max-remaining")
+                    hours = max_remaining_hours or REDIRECT_MAX_REMAINING_HOURS
+                    cmd.extend(["--max-remaining-hours", str(hours)])
             else:
                 bank = str(decline_bank or "tbc").strip().lower() or "tbc"
                 if bank not in ("tbc", "bog"):

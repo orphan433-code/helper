@@ -1,13 +1,12 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
-  Download,
-  FileText,
-  LayoutDashboard,
-  ListOrdered,
+  CloudDownload,
   Loader2,
+  Octagon,
+  RefreshCw,
   Power,
-  RotateCcw,
-  Square,
+  Settings,
+  Users,
 } from "lucide-react";
 import { TopBar } from "@/components/TopBar";
 import { RunView } from "@/components/RunView";
@@ -17,10 +16,132 @@ import { RecoveryDialog } from "@/components/RecoveryDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { BusyOverlay } from "@/components/BusyOverlay";
 import { ResultOverlay } from "@/components/ResultOverlay";
+import { SettingsBundleDialog } from "@/components/SettingsBundlePanel";
 import { LightRays } from "@/components/ui/light-rays";
 import { api, apiCall, serverPost } from "@/lib/api";
 import { useConsole } from "@/store/console";
 import { cn } from "@/lib/utils";
+
+type ViewId = "run" | "deals" | "log";
+
+function NavDivider() {
+  return <div className="mx-0.5 h-7 w-px shrink-0 bg-border" />;
+}
+
+function NavTab({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "cursor-pointer rounded-xl px-3.5 py-2 text-sm font-medium transition-colors",
+        active
+          ? "bg-slate-900 text-white shadow-sm"
+          : "text-slate-600 hover:bg-slate-100 hover:text-slate-900",
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
+function ActionTip({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="group/action relative">
+      {children}
+      <div
+        role="tooltip"
+        className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 w-max max-w-[13rem] -translate-x-1/2 rounded-lg border border-border/80 bg-white px-2.5 py-2 text-left opacity-0 shadow-lg transition-opacity duration-150 group-hover/action:opacity-100"
+      >
+        <p className="text-xs font-semibold text-foreground">{title}</p>
+        <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{description}</p>
+      </div>
+    </div>
+  );
+}
+
+function ActionBtn({
+  title,
+  description,
+  disabled,
+  danger,
+  active,
+  onClick,
+  children,
+}: {
+  title: string;
+  description: string;
+  disabled?: boolean;
+  danger?: boolean;
+  active?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <ActionTip title={title} description={description}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onClick}
+        className={cn(
+          "flex size-10 cursor-pointer items-center justify-center rounded-xl transition-colors",
+          disabled && "cursor-not-allowed opacity-40",
+          danger && !disabled && "bg-red-50 text-red-600 hover:bg-red-100",
+          active && !danger && "bg-slate-900 text-white",
+          !danger && !active && !disabled && "text-slate-500 hover:bg-slate-100 hover:text-slate-900",
+        )}
+      >
+        {children}
+      </button>
+    </ActionTip>
+  );
+}
+
+function GearMenuItem({
+  title,
+  description,
+  disabled,
+  onClick,
+  children,
+}: {
+  title: string;
+  description: string;
+  disabled?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <ActionTip title={title} description={description}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onClick}
+        className={cn(
+          "flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition-colors",
+          disabled ? "cursor-not-allowed opacity-40" : "hover:bg-slate-100",
+        )}
+      >
+        {children}
+      </button>
+    </ActionTip>
+  );
+}
 
 export function AppShell() {
   const view = useConsole((s) => s.view);
@@ -32,6 +153,8 @@ export function AppShell() {
   const openDialog = useConsole((s) => s.openDialog);
   const clearCancelAlerts = useConsole((s) => s.clearCancelAlerts);
   const [updateBusy, setUpdateBusy] = useState(false);
+  const [gearOpen, setGearOpen] = useState(false);
+  const [bundleOpen, setBundleOpen] = useState(false);
 
   const stop = () =>
     apiCall(() => api().stop_job(), (e) => {
@@ -143,10 +266,10 @@ export function AppShell() {
     }
   };
 
-  const nav = [
-    { id: "run" as const, label: "Запуск", Icon: LayoutDashboard },
-    { id: "deals" as const, label: "Операции", Icon: ListOrdered },
-    { id: "log" as const, label: "Журнал", Icon: FileText },
+  const tabs: { id: ViewId; label: string }[] = [
+    { id: "run", label: "Запуск" },
+    { id: "deals", label: "AI команда" },
+    { id: "log", label: "Журнал" },
   ];
 
   return (
@@ -174,80 +297,106 @@ export function AppShell() {
       <ResultOverlay />
       <RecoveryDialog />
       <ConfirmDialog />
+      <SettingsBundleDialog open={bundleOpen} onOpenChange={setBundleOpen} />
 
       <nav className="fixed inset-x-0 bottom-5 z-40 flex justify-center px-4">
-        <div className="flex items-center gap-1 rounded-2xl border border-border/80 bg-white/90 p-1.5 shadow-lg backdrop-blur-md">
-          {nav.map(({ id, label, Icon }) => (
-            <button
+        <div className="flex max-w-full flex-wrap items-center justify-center gap-1 rounded-2xl border border-border/80 bg-white/90 p-1.5 shadow-lg backdrop-blur-md">
+          {tabs.map(({ id, label }) => (
+            <NavTab
               key={id}
-              type="button"
-              title={label}
+              label={label}
+              active={view === id}
               onClick={() => setView(id)}
-              className={cn(
-                "flex size-10 cursor-pointer items-center justify-center rounded-xl transition-colors",
-                view === id
-                  ? "bg-slate-900 text-white"
-                  : "text-slate-500 hover:bg-slate-100 hover:text-slate-900",
-              )}
-            >
-              <Icon className="size-5" />
-            </button>
+            />
           ))}
 
-          <div className="mx-1 h-7 w-px bg-border" />
+          <NavDivider />
 
-          <button
-            type="button"
-            title={updateBusy ? "Обновляю…" : "Обновить код"}
-            disabled={updateBusy}
-            onClick={() => void update()}
-            className={cn(
-              "flex size-10 cursor-pointer items-center justify-center rounded-xl transition-colors",
-              updateBusy
-                ? "bg-slate-900 text-white"
-                : "text-slate-500 hover:bg-slate-100 hover:text-slate-900",
+          <div className="relative">
+            <ActionBtn
+              title="Сервис"
+              description="Настройки команды, обновление, перезапуск и выключение."
+              active={gearOpen}
+              onClick={() => setGearOpen((v) => !v)}
+            >
+              <Settings className="size-5" />
+            </ActionBtn>
+
+            {gearOpen && (
+              <>
+                <button
+                  type="button"
+                  aria-label="Закрыть меню"
+                  className="fixed inset-0 z-40 cursor-default"
+                  onClick={() => setGearOpen(false)}
+                />
+                <div className="absolute bottom-full left-1/2 z-50 mb-2 w-52 -translate-x-1/2 rounded-xl border border-border/80 bg-white p-1 shadow-lg">
+                  <GearMenuItem
+                    title="Настройки команды"
+                    description="Скачать или загрузить zip с team-настройками."
+                    onClick={() => {
+                      setGearOpen(false);
+                      setBundleOpen(true);
+                    }}
+                  >
+                    <Users className="size-4 shrink-0 text-slate-500" />
+                    <span>Настройки команды</span>
+                  </GearMenuItem>
+                  <GearMenuItem
+                    title="Обновить код"
+                    description="Скачивает последнюю версию с GitHub. Конфиг не затирается."
+                    disabled={updateBusy}
+                    onClick={() => {
+                      setGearOpen(false);
+                      void update();
+                    }}
+                  >
+                    {updateBusy ? (
+                      <Loader2 className="size-4 shrink-0 animate-spin text-slate-500" />
+                    ) : (
+                      <CloudDownload className="size-4 shrink-0 text-slate-500" />
+                    )}
+                    <span>Обновить код</span>
+                  </GearMenuItem>
+                  <GearMenuItem
+                    title="Перезапустить"
+                    description="Перезапускает движок TJS без выключения сервера."
+                    disabled={updateBusy}
+                    onClick={() => {
+                      setGearOpen(false);
+                      void restart();
+                    }}
+                  >
+                    <RefreshCw className="size-4 shrink-0 text-slate-500" />
+                    <span>Перезапустить</span>
+                  </GearMenuItem>
+                  <GearMenuItem
+                    title="Выключить"
+                    description="Полностью останавливает сервер TJS."
+                    onClick={() => {
+                      setGearOpen(false);
+                      void shutdown();
+                    }}
+                  >
+                    <Power className="size-4 shrink-0 text-slate-500" />
+                    <span>Выключить</span>
+                  </GearMenuItem>
+                </div>
+              </>
             )}
-          >
-            {updateBusy ? (
-              <Loader2 className="size-5 animate-spin" />
-            ) : (
-              <Download className="size-5" />
-            )}
-          </button>
-          <button
-            type="button"
-            title="Перезапустить"
-            disabled={updateBusy}
-            onClick={() => void restart()}
-            className="flex size-10 cursor-pointer items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40"
-          >
-            <RotateCcw className="size-5" />
-          </button>
-          <button
-            type="button"
-            title="Выключить"
-            onClick={() => void shutdown()}
-            className="flex size-10 cursor-pointer items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
-          >
-            <Power className="size-5" />
-          </button>
+          </div>
 
-          <div className="mx-1 h-7 w-px bg-border" />
+          <NavDivider />
 
-          <button
-            type="button"
+          <ActionBtn
             title="Стоп"
+            description="Останавливает текущую задачу — редирект, отмену или переводы."
             disabled={!running}
+            danger={running}
             onClick={() => void stop()}
-            className={cn(
-              "flex size-10 cursor-pointer items-center justify-center rounded-xl transition-colors",
-              running
-                ? "bg-red-50 text-red-600 hover:bg-red-100"
-                : "cursor-not-allowed text-slate-300",
-            )}
           >
-            <Square className="size-4" />
-          </button>
+            <Octagon className="size-4 fill-current" />
+          </ActionBtn>
         </div>
       </nav>
     </div>

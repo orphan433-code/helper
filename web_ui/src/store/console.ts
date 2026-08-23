@@ -47,16 +47,23 @@ function formatAmountTjs(raw: unknown): string {
   return `${s} TJS`;
 }
 
+function readOrderId(row: Record<string, unknown>): string | undefined {
+  const raw = row.order_id ?? row.orderId ?? row.deal_id ?? row.dealId;
+  const s = String(raw ?? "").trim();
+  return s || undefined;
+}
+
 function asDeals(raw: unknown): DealRow[] {
   if (!Array.isArray(raw)) return [];
   return raw.map((d, i) => {
     const row = (d || {}) as Record<string, unknown>;
     const state = String(row.state || "");
+    const order_id = readOrderId(row);
     const amountTjs = formatAmountTjs(
       row.amount_tjs || row.amount_target || row.amount || "",
     );
     return {
-      id: String(row.order_id || row.id || i),
+      id: order_id || String(row.id || i),
       index: (row.index as string | number | undefined) ?? i + 1,
       holder: String(row.holder || row.name || ""),
       amount: amountTjs,
@@ -66,7 +73,7 @@ function asDeals(raw: unknown): DealRow[] {
       error: row.error ? String(row.error) : undefined,
       ok: row.ok !== false && !row.error,
       active: !!row.active,
-      order_id: row.order_id ? String(row.order_id) : undefined,
+      order_id,
       has_shot: !!(row.has_shot || row.shot),
       has_video: !!(row.has_video || row.video),
       needs_video: !!row.needs_video,
@@ -84,6 +91,45 @@ function asDeals(raw: unknown): DealRow[] {
   });
 }
 
+function isAwaitingReceipt(deal: DealRow): boolean {
+  const state = deal.state || "";
+  return state === "pending" || state === "matched";
+}
+
+function countAwaitingReceiptDeals(deals: DealRow[]): number {
+  return deals.filter(isAwaitingReceipt).length;
+}
+
+function countReceiptReady(deals: DealRow[]): number {
+  return deals.filter((d) => {
+    if (d.state === "done" || d.state === "cancelled") return true;
+    if (d.preview_ready) return true;
+    if (isAwaitingReceipt(d) && d.has_shot && (!d.needs_video || d.has_video)) {
+      return true;
+    }
+    return false;
+  }).length;
+}
+
+function preserveReceiptPreviewFields(prev: DealRow[], next: DealRow[]): DealRow[] {
+  const byOrder = new Map(
+    prev.filter((d) => d.order_id).map((d) => [d.order_id!, d]),
+  );
+  return next.map((d) => {
+    const p = d.order_id ? byOrder.get(d.order_id) : undefined;
+    if (!p || !isAwaitingReceipt(d)) return d;
+    if (!p.has_shot && !p.preview_hint && !p.file_name && !p.preview_ready) return d;
+    return {
+      ...d,
+      has_shot: p.has_shot || d.has_shot,
+      has_video: p.has_video || d.has_video,
+      preview_ready: p.preview_ready || d.preview_ready,
+      preview_hint: p.preview_hint || d.preview_hint,
+      file_name: p.file_name || d.file_name,
+    };
+  });
+}
+
 function mergeReceiptPreview(
   deals: DealRow[],
   preview: Record<string, unknown> | null | undefined,
@@ -92,13 +138,19 @@ function mergeReceiptPreview(
     return deals;
   }
   const byOrder = new Map<string, Record<string, unknown>>();
+  const byIndex = new Map<string, Record<string, unknown>>();
   for (const p of preview.deals) {
     const row = (p || {}) as Record<string, unknown>;
     const oid = row.order_id ? String(row.order_id) : "";
     if (oid) byOrder.set(oid, row);
+    if (row.index != null && row.index !== "") {
+      byIndex.set(String(row.index), row);
+    }
   }
   return deals.map((d) => {
-    const p = d.order_id ? byOrder.get(d.order_id) : undefined;
+    const p =
+      (d.order_id ? byOrder.get(d.order_id) : undefined) ||
+      (d.index != null ? byIndex.get(String(d.index)) : undefined);
     if (!p) return d;
     const state = d.state || "";
     if (state === "pending" || state === "matched") {
@@ -130,6 +182,20 @@ function mergeReceiptPreview(
   });
 }
 
+function receiptWaitingSummary(
+  deals: DealRow[],
+  total: number,
+  readyHint: number | null,
+): string {
+  const awaiting = countAwaitingReceiptDeals(deals);
+  const skipped = deals.filter((d) => d.state === "skipped").length;
+  if (!awaiting && skipped > 0) {
+    return `пропуск — Отмена (${skipped})`;
+  }
+  const ready = readyHint != null ? readyHint : countReceiptReady(deals);
+  return `${ready} из ${total || awaiting || deals.length} готовы`;
+}
+
 type Settings = {
   maxDeals: number;
   emptyPasses: number;
@@ -138,6 +204,8 @@ type Settings = {
   allowVisa: boolean;
   allowMastercard: boolean;
   fromPending: boolean;
+  pipelineBinList: string[];
+  pipelineBins: Record<string, boolean>;
   redirMax: string;
   redirMin: string;
   redirMaxAmt: string;
@@ -168,12 +236,14 @@ type ConsoleState = {
   waitingConfirm: boolean;
   confirmMode: string;
   appVersion: string;
+  agentConfigured: boolean;
   mediaDir: string;
   adbText: string;
   adbOk: boolean;
   settings: Settings;
   pipeline: ProgressPanel;
   receipts: ProgressPanel;
+  lastReceiptPreview: Record<string, unknown> | null;
   decline: ProgressPanel;
   cancels: CancelAlert[];
   recovery: RecoveryState;
@@ -231,6 +301,7 @@ export const useConsole = create<ConsoleState>((set, get) => ({
   waitingConfirm: false,
   confirmMode: "",
   appVersion: "?",
+  agentConfigured: false,
   mediaDir: "Папка загрузок",
   adbText: "Не проверен",
   adbOk: false,
@@ -242,6 +313,11 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     allowVisa: true,
     allowMastercard: false,
     fromPending: false,
+    pipelineBinList: ["537524", "557755"],
+    pipelineBins: {
+      "537524": false,
+      "557755": false,
+    },
     redirMax: "5",
     redirMin: "",
     redirMaxAmt: "",
@@ -275,6 +351,7 @@ export const useConsole = create<ConsoleState>((set, get) => ({
   },
   pipeline: emptyProgress("Ход работы"),
   receipts: emptyProgress("Чеки"),
+  lastReceiptPreview: null,
   decline: emptyProgress("Результат"),
   cancels: [],
   recovery: {
@@ -351,6 +428,27 @@ export const useConsole = create<ConsoleState>((set, get) => ({
         ? !!state.allow_mastercard
         : s.allowMastercard,
       fromPending: has("from_pending") ? !!state.from_pending : s.fromPending,
+      pipelineBinList:
+        has("pipeline_bin_list") && Array.isArray(state.pipeline_bin_list)
+          ? (state.pipeline_bin_list as string[]).map(String)
+          : s.pipelineBinList,
+      pipelineBins: (() => {
+        const list =
+          has("pipeline_bin_list") && Array.isArray(state.pipeline_bin_list)
+            ? (state.pipeline_bin_list as string[]).map(String)
+            : s.pipelineBinList;
+        const raw =
+          has("pipeline_bin_toggles") &&
+          state.pipeline_bin_toggles &&
+          typeof state.pipeline_bin_toggles === "object"
+            ? (state.pipeline_bin_toggles as Record<string, boolean>)
+            : s.pipelineBins;
+        const next: Record<string, boolean> = {};
+        for (const p of list) {
+          next[p] = raw[p] === true;
+        }
+        return next;
+      })(),
       redirSkipBog: has("redirect_skip_bog")
         ? !!state.redirect_skip_bog
         : s.redirSkipBog,
@@ -445,6 +543,9 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     }
     if (has("app_version") && state.app_version) {
       patch.appVersion = String(state.app_version);
+    }
+    if (has("agent_configured")) {
+      patch.agentConfigured = !!state.agent_configured;
     }
 
     // Полный get_state — обновляем running/status; частичный (только ADB) — нет
@@ -565,7 +666,16 @@ export const useConsole = create<ConsoleState>((set, get) => ({
 
   updateReceiptProgress: (payload) => {
     const phase = String(payload.phase || "waiting");
-    const deals = asDeals(payload.deals);
+    const cur = get().receipts;
+    const preview = phase === "waiting" ? get().lastReceiptPreview : null;
+    let deals = asDeals(payload.deals);
+    if (phase === "waiting") {
+      if (preview) {
+        deals = mergeReceiptPreview(deals, preview);
+      } else if (cur.deals.length) {
+        deals = preserveReceiptPreviewFields(cur.deals, deals);
+      }
+    }
     const done = Number(payload.done || 0);
     const failed = Number(payload.failed || 0);
     const total = Number(payload.total || deals.length || 0);
@@ -577,15 +687,28 @@ export const useConsole = create<ConsoleState>((set, get) => ({
       title = failed > 0 ? "Готово с ошибками" : "Чеки загружены";
     else if (phase === "error") title = "Ошибка загрузки чеков";
 
+    const readyHint =
+      phase === "waiting" && preview && preview.ok !== false
+        ? Number(preview.ready_count || 0)
+        : null;
     const summary =
       phase === "waiting"
-        ? `0 из ${total} готовы`
+        ? receiptWaitingSummary(deals, total, readyHint)
         : `${done} из ${total}`;
+
+    const readyForBar =
+      phase === "waiting"
+        ? readyHint != null
+          ? readyHint
+          : countReceiptReady(deals)
+        : done;
 
     // processing + done=0 → undefined = indeterminate-полоска (видно, что идёт работа)
     const progress =
       phase === "waiting"
-        ? 0
+        ? total
+          ? readyForBar / total
+          : 0
         : phase === "done"
           ? 1
           : phase === "processing" && done === 0
@@ -597,6 +720,8 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     set({
       // Как в legacy: сделки уходят из «Обработка» в «Чеки»
       pipeline: emptyProgress("Ход работы"),
+      lastReceiptPreview:
+        phase === "processing" || phase === "done" ? null : get().lastReceiptPreview,
       receipts: {
         visible: true,
         processing: phase === "processing" || phase === "waiting",
@@ -620,7 +745,8 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     });
   },
 
-  clearReceiptProgress: () => set({ receipts: emptyProgress("Чеки") }),
+  clearReceiptProgress: () =>
+    set({ receipts: emptyProgress("Чеки"), lastReceiptPreview: null }),
 
   applyReceiptPreview: (preview) => {
     if (!preview || preview.ok === false) return;
@@ -628,25 +754,30 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     if (!cur.visible || (cur.phase && cur.phase !== "waiting")) return;
 
     const deals = mergeReceiptPreview(cur.deals, preview);
-    const awaiting = deals.filter(
-      (d) => d.state === "pending" || d.state === "matched",
-    ).length;
-    const skipped = deals.filter((d) => d.state === "skipped").length;
     const ready = Number(preview.ready_count || 0);
     const total = Number(preview.total || cur.deals.length || 0);
-
-    let summary: string;
-    if (!awaiting && skipped > 0) {
-      summary = `пропуск — Отмена (${skipped})`;
-    } else {
-      summary = `${ready} из ${total || awaiting} готовы`;
+    const summary = receiptWaitingSummary(deals, total, ready);
+    const filesFound = Number(preview.files_found || 0);
+    const unmatched = Array.isArray(preview.unmatched_files)
+      ? preview.unmatched_files.length
+      : 0;
+    let message = cur.message;
+    if (ready === 0 && filesFound > 0 && countAwaitingReceiptDeals(deals) > 0) {
+      message =
+        unmatched > 0
+          ? `В папке ${filesFound} файл(ов), карта не совпала — проверь скрин`
+          : `В папке ${filesFound} файл(ов), ждём совпадение по карте`;
+    } else if (ready > 0) {
+      message = `Найдено ${ready} из ${countAwaitingReceiptDeals(deals) || total}`;
     }
 
     set({
+      lastReceiptPreview: preview,
       receipts: {
         ...cur,
         deals,
         summary,
+        message,
         progress: total ? ready / total : 0,
         processing: true,
         done: false,

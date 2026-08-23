@@ -44,7 +44,8 @@
         allow_visa,
         allow_mastercard,
         max_empty_list_passes,
-        from_pending
+        from_pending,
+        pipeline_bin_prefixes
       ) =>
         apiPost("/api/save_settings", {
           max_deals,
@@ -54,6 +55,9 @@
           allow_mastercard,
           max_empty_list_passes,
           from_pending: !!from_pending,
+          pipeline_bin_prefixes: Array.isArray(pipeline_bin_prefixes)
+            ? pipeline_bin_prefixes
+            : [],
         }),
       save_redirect_filters: (skip_bog, visa_only, max_remaining, redirect_prefixes) =>
         apiPost("/api/save_redirect_filters", {
@@ -71,7 +75,8 @@
         allow_visa,
         allow_mastercard,
         max_empty_list_passes,
-        from_pending
+        from_pending,
+        pipeline_bin_prefixes
       ) =>
         apiPost("/api/start_pipeline", {
           max_deals,
@@ -81,6 +86,9 @@
           allow_mastercard,
           max_empty_list_passes,
           from_pending: !!from_pending,
+          pipeline_bin_prefixes: Array.isArray(pipeline_bin_prefixes)
+            ? pipeline_bin_prefixes
+            : [],
         }),
       start_login: () => apiPost("/api/start_login"),
       start_accept_names: (max_deals, min_amount, max_amount) =>

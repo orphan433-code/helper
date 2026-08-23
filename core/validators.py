@@ -297,6 +297,21 @@ def skip_reason_for_card_brand(
     return f"карта начинается с {digit} (нужны 4=Visa / 5=MC)"
 
 
+def skip_reason_for_card_bin(
+    account_raw: str,
+    prefixes: list[str] | None,
+) -> str | None:
+    """Если prefixes задан — только карты с этими BIN."""
+    if not prefixes:
+        return None
+    digits = "".join(ch for ch in (account_raw or "") if ch.isdigit())
+    if not digits:
+        return "нет цифр в номере карты"
+    if any(digits.startswith(p) for p in prefixes):
+        return None
+    return f"BIN не из {', '.join(prefixes)}"
+
+
 def session_requisites_key(account_raw: str, holder_raw: str) -> str:
     """Ключ «карта + ФИО» в рамках одного прогона Accept."""
     digits = "".join(ch for ch in (account_raw or "") if ch.isdigit())

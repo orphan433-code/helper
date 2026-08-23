@@ -29,11 +29,26 @@ def set_recovery_handler(handler: RecoveryHandler | None) -> None:
     _recovery_handler = handler
 
 
+def _normalize_confirm_kind(raw: str) -> str:
+    """receipts/video — lower; cancel:/retry: — регистр order_id сохраняем."""
+    kind = str(raw or "receipts").strip()
+    if not kind:
+        return "receipts"
+    low = kind.lower()
+    if low.startswith("retry:rescan:"):
+        return "retry:rescan:" + kind.split(":", 2)[2].strip()
+    if low.startswith("cancel:"):
+        return "cancel:" + kind.split(":", 1)[1].strip()
+    if low.startswith("retry:"):
+        return "retry:" + kind.split(":", 1)[1].strip()
+    return low
+
+
 async def wait_user_confirm(prompt: str) -> str:
     """Ждёт подтверждение пользователя. kind: receipts | video."""
     if _handler is not None:
         kind = await _handler(prompt)
-        return (kind or "receipts").strip().lower()
+        return _normalize_confirm_kind(kind or "receipts")
     print(prompt, end="", flush=True)
     await asyncio.to_thread(input)
     print()

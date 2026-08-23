@@ -564,6 +564,40 @@ def put_approve(
     return code
 
 
+def post_dispute(
+    base_url: str,
+    token: str,
+    deal_id: str,
+    *,
+    reason: str,
+    text: str,
+    media: list | None = None,
+) -> int:
+    """POST /api/disputes/v2 — отмена без чека (I have a problem)."""
+    if not deal_id:
+        raise PanicError("POST /api/disputes/v2: нет deal id")
+    if not reason.strip():
+        raise PanicError("POST /api/disputes/v2: reason пустой")
+    if not text.strip():
+        raise PanicError("POST /api/disputes/v2: text пустой")
+    body = {
+        "media": media if media is not None else [],
+        "dealId": deal_id,
+        "text": text.strip(),
+        "reason": reason.strip(),
+    }
+    code, data = http_json(
+        "POST",
+        f"{base_url}/api/disputes/v2",
+        token,
+        body=body,
+    )
+    info(f"POST /api/disputes/v2 {deal_id} → {code}")
+    if data not in (None, "", {}):
+        info("  " + json.dumps(data, ensure_ascii=False)[:400])
+    return code
+
+
 def ledger_paid_payload(
     record: dict[str, Any],
     *,

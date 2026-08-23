@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -67,7 +68,9 @@ def _deal_to_ui(deal: SessionDeal) -> dict[str, Any]:
         "amount_usdt": float(getattr(deal, "amount_usdt", 0.0) or 0.0),
         "state": ui_state,
         "needs_video": bool(getattr(deal, "needs_video", False)),
+        "has_shot": bool(deal.proof_path),
         "has_video": bool(deal.video_path),
+        "file_name": Path(deal.proof_path).name if deal.proof_path else "",
         "error": deal.error or "",
         "can_cancel": False,
         "can_retry": False,
@@ -103,21 +106,19 @@ def notify_completion_progress(
     )
     failed = sum(1 for d in session.deals if d.state.value == "failed")
     total = len(session.deals)
-    cancel_ok = bool(allow_cancel and session.cancel_unlocked)
     deals_ui = []
     for d in session.deals:
         row = _deal_to_ui(d)
         has_id = bool(d.order_id)
-        # Пропуск банка — серая; Отмена сразу в фазе чеков (без ожидания скана)
+        no_proof = not d.proof_path
+        # «Отмена» только после первого скана чеков (cancel_unlocked)
+        unlock = session.cancel_unlocked
         if d.state.value == "skipped":
-            row["can_cancel"] = bool(allow_cancel and has_id)
+            row["can_cancel"] = bool(allow_cancel and unlock and has_id)
+        elif d.state.value in ("awaiting_proof", "failed") and no_proof:
+            row["can_cancel"] = bool(allow_cancel and unlock and has_id)
         else:
-            # Остальные — Отмена только без чека и после первого скана
-            no_proof = (
-                (d.state.value == "awaiting_proof" and not d.proof_path)
-                or (d.state.value == "failed" and not d.proof_path)
-            )
-            row["can_cancel"] = bool(cancel_ok and has_id and no_proof)
+            row["can_cancel"] = False
         # Повтор — у FAILED с уже найденным чеком (тот же файл)
         row["can_retry"] = bool(
             allow_cancel

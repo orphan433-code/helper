@@ -26,7 +26,9 @@ export function ConfirmDialog() {
           <DialogHeader className="min-w-0 flex-1 pt-0.5">
             <DialogTitle>{dialog.title}</DialogTitle>
             {dialog.body ? (
-              <DialogDescription className="mt-1">{dialog.body}</DialogDescription>
+              <DialogDescription className="mt-1 whitespace-pre-line">
+                {dialog.body}
+              </DialogDescription>
             ) : (
               <DialogDescription className="sr-only">{dialog.title}</DialogDescription>
             )}

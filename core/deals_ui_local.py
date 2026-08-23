@@ -9,11 +9,15 @@ import yaml
 
 from core.decline_bins import DECLINE_BIN_PREFIXES, DECLINE_DEFAULT_PER_RUN
 from core.paths import ROOT
-from core.redirect_bins import REDIRECT_BIN_PREFIXES
+from core.pipeline_bins import PIPELINE_BIN_PREFIXES
+from core.redirect_bins import REDIRECT_BIN_PREFIXES, normalize_redirect_prefixes
 
 LOCAL_PATH = ROOT / "runtime" / "deals_ui.yaml"
 
 _DEFAULT: dict[str, Any] = {
+    "pipeline": {
+        "bin_toggles": {p: False for p in PIPELINE_BIN_PREFIXES},
+    },
     "redirect": {
         "skip_bog": False,
         "visa_only": False,
@@ -47,14 +51,19 @@ def load_local() -> dict[str, Any]:
     if not isinstance(data, dict):
         data = {}
     out = deepcopy(_DEFAULT)
-    for section in ("redirect", "decline"):
+    for section in ("pipeline", "redirect", "decline"):
         raw = data.get(section)
         if not isinstance(raw, dict):
             continue
         block = out[section]
         for key, val in raw.items():
             if key == "bin_toggles" and isinstance(val, dict):
-                prefixes = REDIRECT_BIN_PREFIXES if section == "redirect" else DECLINE_BIN_PREFIXES
+                if section == "pipeline":
+                    prefixes = PIPELINE_BIN_PREFIXES
+                elif section == "redirect":
+                    prefixes = REDIRECT_BIN_PREFIXES
+                else:
+                    prefixes = DECLINE_BIN_PREFIXES
                 block["bin_toggles"] = {
                     p: bool(val.get(p, block["bin_toggles"].get(p, False)))
                     for p in prefixes
@@ -85,6 +94,15 @@ def _patch_section(section: str, **fields: Any) -> dict[str, Any]:
     return block
 
 
+def pipeline_ui_bin_prefixes() -> list[str]:
+    """Включённые BIN основного пайплайна из runtime/deals_ui.yaml."""
+    block = load_local().get("pipeline") or {}
+    raw = block.get("bin_toggles")
+    if not isinstance(raw, dict):
+        raw = {}
+    return [p for p in PIPELINE_BIN_PREFIXES if raw.get(p)]
+
+
 def redirect_ui_filters() -> dict[str, bool]:
     """Тумблеры редиректа из runtime/deals_ui.yaml."""
     block = load_local().get("redirect") or {}
@@ -102,3 +120,29 @@ def redirect_ui_bin_prefixes() -> list[str]:
     if not isinstance(raw, dict):
         raw = {}
     return [p for p in REDIRECT_BIN_PREFIXES if raw.get(p)]
+
+
+def resolve_redirect_bin_prefixes(
+    cli_prefixes: object = None,
+    *,
+    strict_cli: bool = False,
+) -> list[str]:
+    """BIN редиректа: CLI (если передан) или runtime/deals_ui.yaml."""
+    local_bins = redirect_ui_bin_prefixes()
+    if cli_prefixes is None:
+        return local_bins
+    if isinstance(cli_prefixes, str):
+        items = cli_prefixes.split(",")
+    elif isinstance(cli_prefixes, (list, tuple)):
+        items = list(cli_prefixes)
+    else:
+        items = []
+    cli_bins = normalize_redirect_prefixes(items)
+    if items and strict_cli and not cli_bins:
+        raise SystemExit(
+            "Неизвестный BIN редиректа. Доступны: "
+            + ", ".join(REDIRECT_BIN_PREFIXES)
+        )
+    if cli_bins:
+        return cli_bins
+    return local_bins

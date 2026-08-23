@@ -15,4 +15,6 @@ def clamp_decline_limit(raw: object) -> int:
         n = int(raw)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         n = DECLINE_DEFAULT_PER_RUN
+    if n <= 0:
+        return 0
     return max(1, min(DECLINE_MAX_PER_RUN, n))

@@ -10,6 +10,7 @@ from core.decline_bins import (
     DECLINE_DEFAULT_PER_RUN,
     clamp_decline_limit,
 )
+from core.pipeline_bins import PIPELINE_BIN_PREFIXES
 from core.redirect_bins import REDIRECT_BIN_PREFIXES
 from core.paths import ROOT
 
@@ -36,6 +37,11 @@ def apply_gui_settings(
         pipe["from_pending"] = bool(from_pending)
     cfg["pipeline"] = pipe
 
+    # API Accept читает pipeline; api_flow.max_deals — legacy, держим в sync
+    api_flow = dict(cfg.get("api_flow") or {})
+    api_flow["max_deals"] = pipe["max_deals_per_run"]
+    cfg["api_flow"] = api_flow
+
     if (
         min_amount is not None
         or max_amount is not None
@@ -54,6 +60,36 @@ def apply_gui_settings(
         cfg["validation"] = val
 
     save_config(cfg)
+
+
+def pipeline_bin_settings(_cfg: dict | None = None) -> dict[str, bool]:
+    block = load_local().get("pipeline") or {}
+    raw = block.get("bin_toggles") if isinstance(block, dict) else {}
+    if not isinstance(raw, dict):
+        raw = {}
+    return {p: bool(raw.get(p, False)) for p in PIPELINE_BIN_PREFIXES}
+
+
+def apply_pipeline_bin_filters(
+    toggles: dict[str, bool] | None = None,
+    *,
+    prefixes: list[str] | None = None,
+) -> dict[str, bool]:
+    current = pipeline_bin_settings()
+    if prefixes is not None:
+        wanted = {
+            "".join(ch for ch in str(p) if ch.isdigit())
+            for p in prefixes
+            if str(p).strip()
+        }
+        current = {p: p in wanted for p in PIPELINE_BIN_PREFIXES}
+    elif isinstance(toggles, dict):
+        for key, val in toggles.items():
+            digits = "".join(ch for ch in str(key) if ch.isdigit())
+            if digits in PIPELINE_BIN_PREFIXES:
+                current[digits] = bool(val)
+    _patch_section("pipeline", bin_toggles=current)
+    return current
 
 
 def _load_decline_config() -> dict:

@@ -113,7 +113,16 @@ export function ProgressPanelView({
 
 function statusMeta(state: string, previewHint?: string, error?: string) {
   if (previewHint) {
-    return { label: previewHint, className: "bg-slate-100 text-slate-700" };
+    const ready =
+      previewHint.includes("найден") ||
+      previewHint.includes("готов") ||
+      previewHint.includes("загружен");
+    return {
+      label: previewHint,
+      className: ready
+        ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+        : "bg-slate-100 text-slate-700",
+    };
   }
   if (error && (state === "error" || state === "skipped")) {
     return {
@@ -218,7 +227,14 @@ function DealItem({
 
   const meta = statusMeta(
     state,
-    mode === "receipts" ? d.preview_hint : undefined,
+    mode === "receipts"
+      ? d.preview_hint ||
+          (d.has_shot
+            ? d.needs_video && !d.has_video
+              ? "чек есть, ждём видео"
+              : "чек найден"
+            : undefined)
+      : undefined,
     d.error,
   );
 

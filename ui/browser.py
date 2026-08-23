@@ -18,9 +18,10 @@ import time
 from typing import Any
 
 try:
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-    from fastapi.responses import HTMLResponse, Response, FileResponse
+    from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
+    from fastapi.responses import FileResponse, HTMLResponse, Response
     from fastapi.staticfiles import StaticFiles
+    from starlette.background import BackgroundTask
 except ImportError:  # pragma: no cover
     FastAPI = None  # type: ignore[misc, assignment]
     WebSocket = Any  # type: ignore[misc, assignment]
@@ -259,7 +260,15 @@ def create_app() -> Any:
         "open_videos_folder",
         "get_update_status",
         "apply_app_update",
+        "agent_parse",
+        "agent_preview",
+        "agent_history",
+        "agent_history_clear",
+        "agent_history_remove",
+        "agent_history_favorite",
     }
+
+    SETTINGS_EXPORT_DIR = ROOT / "runtime" / "bundle_exports"
 
     @app.on_event("startup")
     async def _startup() -> None:
@@ -387,6 +396,7 @@ def create_app() -> Any:
             allow_mastercard=body.get("allow_mastercard", False),
             max_empty_list_passes=body.get("max_empty_list_passes"),
             from_pending=body.get("from_pending", False),
+            pipeline_bin_prefixes=body.get("pipeline_bin_prefixes"),
         )
 
     @app.post("/api/save_redirect_filters")
@@ -414,6 +424,7 @@ def create_app() -> Any:
             allow_mastercard=body.get("allow_mastercard", False),
             max_empty_list_passes=body.get("max_empty_list_passes"),
             from_pending=body.get("from_pending"),
+            pipeline_bin_prefixes=body.get("pipeline_bin_prefixes"),
         )
 
     @app.post("/api/start_accept_names")
@@ -453,6 +464,106 @@ def create_app() -> Any:
             max_remaining=body.get("max_remaining", False),
             redirect_prefixes=body.get("redirect_prefixes"),
         )
+
+    @app.post("/api/agent/parse")
+    async def agent_parse(body: dict[str, Any]) -> Any:
+        return await _call(
+            "agent_parse",
+            text=body.get("text", ""),
+            ui_context=body.get("ui_context"),
+        )
+
+    @app.post("/api/agent/preview")
+    async def agent_preview(body: dict[str, Any]) -> Any:
+        return await _call(
+            "agent_preview",
+            plan=body.get("plan"),
+            ui_context=body.get("ui_context"),
+        )
+
+    @app.post("/api/agent/execute")
+    async def agent_execute(body: dict[str, Any]) -> Any:
+        return await _call(
+            "agent_execute",
+            plan=body.get("plan"),
+            ui_context=body.get("ui_context"),
+        )
+
+    @app.get("/api/agent/history")
+    async def agent_history(limit: int = 30) -> Any:
+        return await _call("agent_history", limit=limit)
+
+    @app.post("/api/agent/history/clear")
+    async def agent_history_clear() -> Any:
+        return await _call("agent_history_clear")
+
+    @app.post("/api/agent/history/remove")
+    async def agent_history_remove(body: dict[str, Any]) -> Any:
+        return await _call("agent_history_remove", text=body.get("text", ""))
+
+    @app.post("/api/agent/history/favorite")
+    async def agent_history_favorite(body: dict[str, Any]) -> Any:
+        return await _call(
+            "agent_history_favorite",
+            text=body.get("text", ""),
+            favorite=bool(body.get("favorite", True)),
+        )
+
+    @app.get("/api/settings/export")
+    async def settings_export(include_secrets: bool = False) -> Any:
+        import tempfile
+        from core.config_bundle import BUNDLE_EXT, export_bundle
+
+        SETTINGS_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        fd, raw_path = tempfile.mkstemp(
+            suffix=BUNDLE_EXT,
+            dir=str(SETTINGS_EXPORT_DIR),
+        )
+        os.close(fd)
+        out_path = await asyncio.to_thread(
+            export_bundle,
+            raw_path,
+            include_secrets=include_secrets,
+        )
+        fname = out_path.name
+
+        def _cleanup() -> None:
+            try:
+                out_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        return FileResponse(
+            out_path,
+            filename=fname,
+            media_type="application/zip",
+            background=BackgroundTask(_cleanup),
+        )
+
+    @app.post("/api/settings/import")
+    async def settings_import(file: UploadFile = File(...)) -> Any:
+        from core.config_bundle import import_bundle
+
+        name = str(file.filename or "").lower()
+        if not name.endswith(".zip"):
+            return {"ok": False, "error": "Нужен файл .tjsbundle.zip"}
+
+        tmp = ROOT / "runtime" / "_bundle_import.tjsbundle.zip"
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            tmp.write_bytes(await file.read())
+            report = await asyncio.to_thread(import_bundle, tmp)
+            state = await asyncio.to_thread(engine.api.get_state)
+            return {"ok": True, "state": state, **report}
+        except Exception as exc:
+            traceback.print_exc()
+            return {"ok": False, "error": str(exc)}
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     @app.post("/api/stop_job")
     async def stop_job() -> Any:

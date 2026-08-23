@@ -38,7 +38,7 @@ from core.decline_bins import (
     DECLINE_DEFAULT_PER_RUN,
     clamp_decline_limit,
 )
-from core.deals_ui_local import redirect_ui_bin_prefixes, redirect_ui_filters
+from core.deals_ui_local import redirect_ui_filters, resolve_redirect_bin_prefixes
 from core.redirect_bins import REDIRECT_BIN_PREFIXES, normalize_redirect_prefixes
 from core.redirect_rules import (
     REDIRECT_MAX_REMAINING_HOURS,
@@ -650,17 +650,31 @@ async def run(args: argparse.Namespace) -> int:
     max_amt: float | None = None
     raw_prefixes = getattr(args, "prefixes", None)
     bin_prefixes = normalize_bin_prefixes(raw_prefixes)
-    if raw_prefixes and not bin_prefixes:
+    extra_card: list[str] = []
+    for raw in getattr(args, "card_prefixes", None) or []:
+        digits = _digits_only(str(raw))
+        if len(digits) >= 4 and digits not in extra_card:
+            extra_card.append(digits)
+    if raw_prefixes and not bin_prefixes and not extra_card:
         raise SystemExit(
             "Неизвестный BIN. Доступны: " + ", ".join(DECLINE_BIN_PREFIXES)
         )
     include_tbc = bool(getattr(args, "tbc", False))
     bank_preset = _normalize_bank_preset(getattr(args, "bank", None))
-    ui_filter = bool(bin_prefixes) or include_tbc
-    if ui_filter:
+    all_cards = bool(getattr(args, "all_cards", False))
+    ui_filter = bool(bin_prefixes) or bool(extra_card) or include_tbc
+    if all_cards:
+        ui_filter = False
+        patterns = []
+        card_prefixes = []
+        bank_label = "все карты"
+    elif ui_filter:
         patterns: list[str] = []
         card_prefixes = list(bin_prefixes)
-        labels = list(bin_prefixes)
+        for p in extra_card:
+            if p not in card_prefixes:
+                card_prefixes.append(p)
+        labels = list(card_prefixes)
         if include_tbc:
             tbc_pats, tbc_prefs, _ = _decline_match_rules(
                 cfg, bank_preset="tbc"
@@ -692,12 +706,8 @@ async def run(args: argparse.Namespace) -> int:
             or ui_red.get("visa_only", False)
         )
     )
-    max_remaining = bool(
-        do_redirect
-        and (
-            getattr(args, "max_remaining", False)
-            or ui_red.get("max_remaining", False)
-        )
+    max_remaining = bool(getattr(args, "max_remaining", False)) or bool(
+        do_redirect and ui_red.get("max_remaining", False)
     )
     hours_raw = getattr(args, "max_remaining_hours", None)
     if hours_raw is None:
@@ -711,16 +721,14 @@ async def run(args: argparse.Namespace) -> int:
 
     redirect_prefixes: list[str] = []
     if do_redirect:
-        raw_rp = getattr(args, "redirect_prefixes", None)
-        if raw_rp:
-            redirect_prefixes = normalize_redirect_prefixes(raw_rp)
-            if raw_rp and not redirect_prefixes:
-                raise SystemExit(
-                    "Неизвестный BIN редиректа. Доступны: "
-                    + ", ".join(REDIRECT_BIN_PREFIXES)
-                )
-        else:
-            redirect_prefixes = redirect_ui_bin_prefixes()
+        redirect_prefixes = resolve_redirect_bin_prefixes(
+            getattr(args, "redirect_prefixes", None),
+            strict_cli=True,
+        )
+        for raw in getattr(args, "redirect_card_prefixes", None) or []:
+            digits = _digits_only(str(raw))
+            if len(digits) >= 4 and digits not in redirect_prefixes:
+                redirect_prefixes.append(digits)
 
     if do_redirect:
         traders = _resolve_active_traders(
@@ -740,6 +748,19 @@ async def run(args: argparse.Namespace) -> int:
         except (TypeError, ValueError):
             max_amt = None
     elif ui_filter:
+        raw_limit = getattr(args, "max_per_run", None) or DECLINE_DEFAULT_PER_RUN
+        max_per_run = clamp_decline_limit(raw_limit)
+        min_raw = getattr(args, "min_amount", None)
+        max_raw = getattr(args, "max_amount", None)
+        try:
+            min_amt = float(min_raw) if min_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            min_amt = None
+        try:
+            max_amt = float(max_raw) if max_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            max_amt = None
+    elif all_cards:
         raw_limit = getattr(args, "max_per_run", None) or DECLINE_DEFAULT_PER_RUN
         max_per_run = clamp_decline_limit(raw_limit)
         min_raw = getattr(args, "min_amount", None)
@@ -777,7 +798,7 @@ async def run(args: argparse.Namespace) -> int:
         if skip_bog:
             print(f"[INFO] Пропуск (не редиректим): {skip_hint}")
         else:
-            print("[INFO] Фильтр BOG выключен — все подряд")
+            print("[INFO] Пропуск BoG выключен — BoG не исключается отдельно")
         if visa_only:
             print("[INFO] Только Visa (карты 4…)")
         if max_remaining:
@@ -789,6 +810,11 @@ async def run(args: argparse.Namespace) -> int:
             print(
                 "[INFO] Только карты BIN "
                 + ", ".join(p + "*" for p in redirect_prefixes)
+            )
+        else:
+            print(
+                "[WARN] BIN-фильтр не активен — редирект любых карт "
+                "(в т.ч. BoG 548888)"
             )
         print(f"[INFO] Аккаунты (равномерно): {labels}")
     else:
@@ -880,9 +906,14 @@ async def run(args: argparse.Namespace) -> int:
             ):
                 continue
         else:
-            if not deal_matches_bank(
+            if ui_filter and not deal_matches_bank(
                 row, patterns=patterns, card_prefixes=card_prefixes
             ):
+                continue
+            if max_remaining and not remaining_under_hours(
+                row, max_remaining_hours
+            ):
+                skipped_remaining += 1
                 continue
             if not _amount_in_range(
                 _deal_amount(row), min_amount=min_amt, max_amount=max_amt
@@ -905,6 +936,16 @@ async def run(args: argparse.Namespace) -> int:
         print(f"[INFO] Пропущено (не BIN редиректа): {skipped_redirect_bin}")
 
     if (not do_redirect) and ui_filter:
+        if max_remaining:
+            print(
+                f"[INFO] Только Time remaining < {max_remaining_hours:g} ч "
+                f"(expiredAt − now)"
+            )
+        if skipped_remaining:
+            print(
+                f"[INFO] Пропущено (остаток ≥ {max_remaining_hours:g} ч "
+                f"или нет expiredAt): {skipped_remaining}"
+            )
         candidates.sort(key=_remaining_sort_key)
         if max_per_run > 0:
             candidates = candidates[:max_per_run]
@@ -1057,7 +1098,7 @@ def main() -> None:
     parser.add_argument(
         "--max-remaining",
         action="store_true",
-        help="при --redirect: только сделки с Time remaining меньше порога",
+        help="только сделки с Time remaining меньше порога (отмена и редирект)",
     )
     parser.add_argument(
         "--max-remaining-hours",
@@ -1082,6 +1123,22 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--redirect-card-prefix",
+        action="append",
+        dest="redirect_card_prefixes",
+        default=None,
+        metavar="PREFIX",
+        help=(
+            "Любой префикс карты для редиректа (5598, 4315…), не только каталог BIN. "
+            "Можно несколько раз."
+        ),
+    )
+    parser.add_argument(
+        "--all-cards",
+        action="store_true",
+        help="отмена без фильтра BIN/банка — только сумма, время, лимит",
+    )
+    parser.add_argument(
         "--prefix",
         action="append",
         dest="prefixes",
@@ -1091,6 +1148,17 @@ def main() -> None:
             "BIN карты для отмены (можно несколько раз): "
             "558328 / 531125 / 516746 / 548888. "
             "Сортировка по остатку времени, лимит --max-per-run (1–50)."
+        ),
+    )
+    parser.add_argument(
+        "--card-prefix",
+        action="append",
+        dest="card_prefixes",
+        default=None,
+        metavar="PREFIX",
+        help=(
+            "Любой префикс карты для отмены (5598, 4315…), не только каталог BIN. "
+            "Можно несколько раз."
         ),
     )
     parser.add_argument(

@@ -17,6 +17,7 @@ from completion.session import (
     DealCompletionState,
     SessionDeal,
     build_session,
+    find_session_deal,
 )
 from core.config import completion_settings
 from core.human import HumanTiming, parse_human_timing
@@ -31,7 +32,7 @@ from platcore.completion import (
 from platcore.dispute import parse_dispute_config, submit_dispute_without_proof
 from platcore.pipeline import AcceptedDeal
 from completion.proof import list_new_proof_files, pick_latest_video
-from ui.prompts import wait_user_confirm
+from ui.prompts import wait_user_confirm, _normalize_confirm_kind
 
 
 @dataclass(frozen=True)
@@ -358,7 +359,7 @@ def clear_deal_for_rescan(
     session: CompletionSession, order_id: str
 ) -> SessionDeal | None:
     """Сбросить привязку чека — можно положить новый файл и снова «Загрузить»."""
-    deal = next((d for d in session.deals if d.order_id == order_id), None)
+    deal = find_session_deal(session, order_id)
     if deal is None:
         return None
     if deal.state not in (
@@ -409,6 +410,12 @@ def apply_matches(
 def _api_http_complete(cfg: dict | None) -> bool:
     flow = (cfg or {}).get("api_flow") or {}
     return bool(flow.get("enabled") and flow.get("run_completion"))
+
+
+def _api_http_dispute(cfg: dict | None) -> bool:
+    """Отмена без чека — POST /api/disputes/v2, как Accept/upload."""
+    flow = (cfg or {}).get("api_flow") or {}
+    return bool(flow.get("enabled"))
 
 
 async def _complete_one_matched_deal(
@@ -798,7 +805,7 @@ async def cancel_deal_on_platcore(
     cfg: dict,
 ) -> None:
     """Ручная отмена одной сделки (dispute без чека). Последовательно."""
-    deal = next((d for d in session.deals if d.order_id == order_id), None)
+    deal = find_session_deal(session, order_id)
     if deal is None:
         warn(f"Отмена: сделка order_id={order_id!r} не найдена")
         return
@@ -812,20 +819,10 @@ async def cancel_deal_on_platcore(
         )
         return
 
-    page = page_by_order.get(deal.order_id)
-    if page is None or page.is_closed():
-        deal.state = DealCompletionState.FAILED
-        deal.error = "вкладка PlatCore закрыта — отмена невозможна"
-        error(f"#{deal.index}: вкладка закрыта, отмена не выполнена")
-        notify_completion_progress(
-            session,
-            phase="waiting",
-            message=f"#{deal.index}: вкладка закрыта",
-            allow_cancel=True,
-        )
-        return
-
     dispute = parse_dispute_config(cfg)
+    page = page_by_order.get(deal.order_id)
+    use_api = _api_http_dispute(cfg)
+
     notify_completion_progress(
         session,
         phase="processing",
@@ -835,16 +832,38 @@ async def cancel_deal_on_platcore(
     )
 
     try:
-        await ensure_dropzone_on_page(page)
-        await asyncio.wait_for(
-            submit_dispute_without_proof(
-                page,
-                dispute,
-                timing=timing,
+        if use_api:
+            from platcore.api_dispute import dispute_deal_via_api
+
+            await dispute_deal_via_api(
+                cfg,
+                order_id=deal.order_id,
+                task_id=deal.task_id,
+                dispute=dispute,
                 deal_index=deal.index,
-            ),
-            timeout=180.0,
-        )
+            )
+        else:
+            if page is None or page.is_closed():
+                deal.state = DealCompletionState.FAILED
+                deal.error = "вкладка PlatCore закрыта — отмена невозможна"
+                error(f"#{deal.index}: вкладка закрыта, отмена не выполнена")
+                notify_completion_progress(
+                    session,
+                    phase="waiting",
+                    message=f"#{deal.index}: вкладка закрыта",
+                    allow_cancel=True,
+                )
+                return
+            await ensure_dropzone_on_page(page)
+            await asyncio.wait_for(
+                submit_dispute_without_proof(
+                    page,
+                    dispute,
+                    timing=timing,
+                    deal_index=deal.index,
+                ),
+                timeout=180.0,
+            )
         deal.state = DealCompletionState.CANCELLED
         deal.error = ""
         ok(f"#{deal.index} {_card_tag(deal.account_digits)} — отменена (dispute)")
@@ -879,7 +898,7 @@ async def retry_deal_money_sent(
     cfg: dict | None = None,
 ) -> None:
     """Повтор Money sent для FAILED с уже найденным чеком."""
-    deal = next((d for d in session.deals if d.order_id == order_id), None)
+    deal = find_session_deal(session, order_id)
     if deal is None:
         warn(f"Retry: сделка order_id={order_id!r} не найдена")
         return
@@ -1016,7 +1035,7 @@ async def _run_completion_phase_body(
         session,
         phase="waiting",
         message=start_msg,
-        allow_cancel=True,
+        allow_cancel=False,
     )
 
     while session.unresolved():
@@ -1054,12 +1073,12 @@ async def _run_completion_phase_body(
             session,
             phase="waiting",
             message=wait_msg,
-            allow_cancel=True,
+            allow_cancel=session.cancel_unlocked,
         )
         confirm_kind = await wait_user_confirm(confirm_hint)
         raise_if_stopped()
 
-        kind = (confirm_kind or "receipts").strip().lower()
+        kind = _normalize_confirm_kind(confirm_kind or "receipts")
         if kind.startswith("cancel:"):
             order_id = kind.split(":", 1)[1].strip()
             await cancel_deal_on_platcore(

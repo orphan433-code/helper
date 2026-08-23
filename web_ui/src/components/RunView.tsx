@@ -27,16 +27,22 @@ export function RunView() {
   const appendLog = useConsole((st) => st.appendLog);
   const openDialog = useConsole((st) => st.openDialog);
   const clearCancelAlerts = useConsole((st) => st.clearCancelAlerts);
-  const clearDeclineResult = useConsole((st) => st.clearDeclineResult);
   const applyState = useConsole((st) => st.applyState);
   const applyReceiptPreview = useConsole((st) => st.applyReceiptPreview);
 
-  const [previewReady, setPreviewReady] = useState(0);
-  const [previewAwait, setPreviewAwait] = useState(0);
   const [adbBusy, setAdbBusy] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const pollBusy = useRef(false);
   const saveTimer = useRef<number | null>(null);
+
+  const awaitingReceipts = receipts.deals.filter(
+    (d) => d.state === "pending" || d.state === "matched",
+  ).length;
+  const readyReceipts = receipts.deals.filter(
+    (d) =>
+      d.preview_ready ||
+      (d.has_shot && (!d.needs_video || d.has_video)),
+  ).length;
 
   const err = (e: string) => {
     appendLog(`[ОШИБКА] ${e}`);
@@ -63,6 +69,7 @@ export function RunView() {
   const save = async () => {
     if (saveState === "saving") return;
     setSaveState("saving");
+    const pipelineBins = s.pipelineBinList.filter((p) => s.pipelineBins[p]);
     const r = await apiCall(
       () =>
         api().save_settings(
@@ -73,6 +80,7 @@ export function RunView() {
           s.allowMastercard,
           Math.max(1, s.emptyPasses || 1),
           s.fromPending,
+          pipelineBins,
         ),
       err,
     );
@@ -86,20 +94,32 @@ export function RunView() {
   };
 
   const login = () => apiCall(() => api().start_login(), err);
-  const start = () =>
-    apiCall(
+  const start = async () => {
+    const deals = Math.max(1, Math.min(50, s.maxDeals || 0));
+    if (!s.maxDeals || s.maxDeals < 1) {
+      await openDialog({
+        title: "Запуск",
+        body: "Укажи «Макс. сделок» в фильтрах (1–50)",
+        alert: true,
+      });
+      return;
+    }
+    const pipelineBins = s.pipelineBinList.filter((p) => s.pipelineBins[p]);
+    return apiCall(
       () =>
         api().start_pipeline(
-          Math.max(1, s.maxDeals || 1),
+          deals,
           s.minAmount.trim(),
           s.maxAmount.trim(),
           s.allowVisa,
           s.allowMastercard,
           Math.max(1, s.emptyPasses || 1),
           s.fromPending,
+          pipelineBins,
         ),
       err,
     );
+  };
   const confirmLogin = () => apiCall(() => api().confirm("login"), err);
   const confirmReceipts = () => apiCall(() => api().confirm("receipts"), err);
   const openFolder = () => apiCall(() => api().open_videos_folder(), err);
@@ -120,15 +140,12 @@ export function RunView() {
   }, []);
 
   useEffect(() => {
-    if (
-      !receiptsWaiting ||
-      receiptsPhase === "processing" ||
-      receiptsPhase === "done"
-    ) {
-      setPreviewReady(0);
-      setPreviewAwait(0);
-      return;
-    }
+    const previewActive =
+      showReceiptPanel &&
+      receiptsPhase !== "processing" &&
+      receiptsPhase !== "done" &&
+      awaitingReceipts > 0;
+    if (!previewActive) return;
     let alive = true;
     const tick = async () => {
       if (!alive || pollBusy.current) return;
@@ -137,8 +154,6 @@ export function RunView() {
         const prev = await api().preview_receipts();
         if (!alive || !prev || prev.ok === false) return;
         applyReceiptPreview(prev);
-        setPreviewReady(Number(prev.ready_count || 0));
-        setPreviewAwait(Number(prev.awaiting_count || 0));
       } catch {
         /* bridge ещё не готов / фаза сменилась */
       } finally {
@@ -151,50 +166,12 @@ export function RunView() {
       alive = false;
       window.clearInterval(id);
     };
-  }, [receiptsWaiting, receiptsPhase, applyReceiptPreview]);
+  }, [showReceiptPanel, receiptsPhase, awaitingReceipts, applyReceiptPreview]);
 
   const loadLabel =
-    receiptsWaiting && previewAwait > 0 && previewReady > 0
-      ? `Загрузить (${previewReady}/${previewAwait})`
+    receiptsWaiting && awaitingReceipts > 0 && readyReceipts > 0
+      ? `Загрузить (${readyReceipts}/${awaitingReceipts})`
       : "Загрузить";
-
-  const acceptBusy = running && jobMode === "accept_names";
-
-  const acceptNamesRun = async () => {
-    if (acceptBusy || running) return;
-    const maxN = parseInt(String(s.acceptNamesMax).trim(), 10);
-    if (!Number.isFinite(maxN) || maxN < 1) {
-      await openDialog({
-        title: "Принять",
-        body: "Укажи количество (1–50)",
-        alert: true,
-      });
-      return;
-    }
-    const take = Math.min(50, maxN);
-    const amtBits = [
-      ...(s.acceptNamesMinAmt.trim() ? [`от ${s.acceptNamesMinAmt.trim()}`] : []),
-      ...(s.acceptNamesMaxAmt.trim() ? [`до ${s.acceptNamesMaxAmt.trim()}`] : []),
-    ];
-    const amtNote = amtBits.length ? ` · ${amtBits.join(" ")} USDT` : "";
-    const ok = await openDialog({
-      title: "Принять сделки",
-      body: `Примет до ${take} сделок, где имена совпадают${amtNote}. Только Accept в PlatCore — без банка и чеков.`,
-      danger: true,
-      confirmLabel: "Принять",
-    });
-    if (!ok) return;
-    clearDeclineResult();
-    await apiCall(
-      () =>
-        api().start_accept_names(
-          take,
-          s.acceptNamesMinAmt.trim() || null,
-          s.acceptNamesMaxAmt.trim() || null,
-        ),
-      err,
-    );
-  };
 
   return (
     <BlurFade delay={0.05} inView>
@@ -307,6 +284,26 @@ export function RunView() {
                 />
               </div>
             </Field>
+            <div className="space-y-1.5">
+              <Label>BIN</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {s.pipelineBinList.map((bin) => (
+                  <ToggleRow
+                    key={bin}
+                    label={bin}
+                    checked={!!s.pipelineBins[bin]}
+                    onChange={(v) =>
+                      patch({
+                        pipelineBins: { ...s.pipelineBins, [bin]: v },
+                      })
+                    }
+                  />
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                BIN вкл — только эти карты. Все BIN выкл — любые.
+              </p>
+            </div>
             <Field label="Режим">
               <ToggleRow
                 label="Из pending"
@@ -496,110 +493,6 @@ export function RunView() {
           {showReceiptPanel && <ProgressPanelView panel={receipts} mode="receipts" />}
         </BentoCard>
       </BentoGrid>
-
-      <section className="border-t border-slate-200/80 pt-8">
-        <div className="mb-4 px-0.5">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-400">
-            Отдельно от пайплайна
-          </p>
-          <h2 className="mt-1 text-base font-semibold text-slate-900">
-            Принять · совпадение имён
-          </h2>
-          <p className="mt-0.5 max-w-2xl text-sm leading-relaxed text-muted-foreground">
-            Просматривает новые сделки и принимает те, где имя на счёте совпадает с именем
-            отправителя. Только «Принять» в PlatCore — банк, переводы и чеки здесь не
-            запускаются.
-          </p>
-        </div>
-
-        <BentoGrid className="auto-rows-[minmax(0,auto)] lg:grid-rows-[auto]">
-          <BentoCard
-            className="col-span-3 lg:col-span-2"
-            name="Запуск"
-            description="Сколько сделок принять и в каком диапазоне суммы"
-            tone={acceptBusy ? "active" : "default"}
-            cta={
-              <RippleButton
-                disabled={acceptBusy || running}
-                onClick={() => void acceptNamesRun()}
-                className={cn(
-                  "min-w-[7.5rem] border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700",
-                  (acceptBusy || running) && "opacity-90",
-                )}
-                rippleColor="#a7f3d0"
-              >
-                {acceptBusy ? (
-                  <>
-                    <Loader2 className="size-4 animate-spin" />
-                    Принимаю…
-                  </>
-                ) : (
-                  "Принять"
-                )}
-              </RippleButton>
-            }
-          >
-            <div className="flex flex-col gap-3">
-              <div
-                className={cn(
-                  "rounded-xl border px-3 py-2.5 text-sm",
-                  acceptBusy
-                    ? "border-slate-300 bg-slate-50"
-                    : "border-emerald-200/80 bg-emerald-50/50",
-                )}
-              >
-                <div className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
-                  Когда сделка подходит
-                </div>
-                <p className="mt-0.5 font-medium text-slate-800">
-                  Владелец счёта и отправитель — один и тот же человек
-                </p>
-                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  Сравниваем имена из карточки сделки (Account owner и Sender name).
-                  Латиница и кириллица, порядок слов и отчество не мешают — главное, чтобы
-                  совпали имя и фамилия.
-                </p>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-3">
-                <Field label="Сколько">
-                  <Input
-                    inputMode="numeric"
-                    min={1}
-                    max={50}
-                    value={s.acceptNamesMax}
-                    placeholder="1–50"
-                    disabled={acceptBusy || running}
-                    onChange={(e) =>
-                      patch({
-                        acceptNamesMax: e.target.value.replace(/[^\d]/g, "").slice(0, 2),
-                      })
-                    }
-                  />
-                </Field>
-                <div className="space-y-1.5 sm:col-span-2">
-                  <Label>Сумма, USDT</Label>
-                  <div className="flex items-center gap-2">
-                    <Input
-                      placeholder="от"
-                      value={s.acceptNamesMinAmt}
-                      disabled={acceptBusy || running}
-                      onChange={(e) => patch({ acceptNamesMinAmt: e.target.value })}
-                    />
-                    <span className="text-muted-foreground">–</span>
-                    <Input
-                      placeholder="до"
-                      value={s.acceptNamesMaxAmt}
-                      disabled={acceptBusy || running}
-                      onChange={(e) => patch({ acceptNamesMaxAmt: e.target.value })}
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </BentoCard>
-        </BentoGrid>
-      </section>
     </div>
     </BlurFade>
   );
@@ -644,16 +537,18 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 function ToggleRow({
   label,
   checked,
+  disabled,
   onChange,
 }: {
   label: string;
   checked: boolean;
+  disabled?: boolean;
   onChange: (v: boolean) => void;
 }) {
   return (
     <label className="flex cursor-pointer items-center justify-between gap-2 rounded-xl border border-border/80 bg-muted/25 px-3 py-2.5">
       <span className="text-sm font-semibold text-foreground">{label}</span>
-      <Switch checked={checked} onCheckedChange={onChange} />
+      <Switch checked={checked} disabled={disabled} onCheckedChange={onChange} />
     </label>
   );
 }

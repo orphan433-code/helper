@@ -39,11 +39,13 @@ from platcore.pipeline import (
     _validation_card_brands,
 )
 from core.recovery import deal_summary_from_accepted, offer_recovery_choice
+from core.deals_ui_local import pipeline_ui_bin_prefixes
 from core.validators import (
     PanicError,
     deal_to_dict,
     parse_amount_value,
     session_requisites_key,
+    skip_reason_for_card_bin,
     skip_reason_for_card_brand,
     skip_reason_for_preview,
     skip_reason_for_session_duplicate,
@@ -223,6 +225,7 @@ async def claim_pending_deals_loop(
     confirm_next = bool(pipe_cfg.get("confirm_next_deal", False))
     min_amount, max_amount = _validation_amount_limits(val_cfg)
     allow_visa, allow_mc = _validation_card_brands(val_cfg)
+    bin_prefixes = pipeline_ui_bin_prefixes()
     monitor_url = pending_monitor_url(str(dash_cfg.get("monitor_url") or ""))
 
     seen: set[str] = set()
@@ -249,12 +252,15 @@ async def claim_pending_deals_loop(
         if max_amount is not None:
             parts.append(f"<= {max_amount:g}")
         info(f"USDT (вход): {' и '.join(parts)}")
-    brands = []
-    if allow_visa:
-        brands.append("Visa(4…)")
-    if allow_mc:
-        brands.append("MC(5…)")
-    info(f"Карты: {', '.join(brands) if brands else 'нет (всё skip)'}")
+    if bin_prefixes:
+        info(f"BIN: только {', '.join(p + '*' for p in bin_prefixes)} (Visa/MC не смотрим)")
+    else:
+        brands = []
+        if allow_visa:
+            brands.append("Visa(4…)")
+        if allow_mc:
+            brands.append("MC(5…)")
+        info(f"Карты: {', '.join(brands) if brands else 'нет (всё skip)'}")
 
     while spawned < max_deals:
         raise_if_stopped()
@@ -302,17 +308,26 @@ async def claim_pending_deals_loop(
                 seen.add(preview.fingerprint)
                 continue
 
-            skip_card = skip_reason_for_card_brand(
-                preview.account_raw,
-                allow_visa=allow_visa,
-                allow_mastercard=allow_mc,
-            )
-            if skip_card:
-                info(
-                    f"Пропуск (фильтр карты): {preview.account_raw or '—'} — {skip_card}"
+            if bin_prefixes:
+                skip_bin = skip_reason_for_card_bin(preview.account_raw, bin_prefixes)
+                if skip_bin:
+                    info(
+                        f"Пропуск (фильтр BIN): {preview.account_raw or '—'} — {skip_bin}"
+                    )
+                    seen.add(preview.fingerprint)
+                    continue
+            else:
+                skip_card = skip_reason_for_card_brand(
+                    preview.account_raw,
+                    allow_visa=allow_visa,
+                    allow_mastercard=allow_mc,
                 )
-                seen.add(preview.fingerprint)
-                continue
+                if skip_card:
+                    info(
+                        f"Пропуск (фильтр карты): {preview.account_raw or '—'} — {skip_card}"
+                    )
+                    seen.add(preview.fingerprint)
+                    continue
 
             skip_dup = skip_reason_for_session_duplicate(
                 preview.account_raw,

@@ -85,6 +85,26 @@ class CompletionSession:
         )
 
 
+def find_session_deal(
+    session: CompletionSession | None,
+    order_id: str,
+) -> SessionDeal | None:
+    """PlatCore orderId — регистр в UI/URL может отличаться."""
+    if session is None:
+        return None
+    oid = str(order_id or "").strip()
+    if not oid:
+        return None
+    for deal in session.deals:
+        if deal.order_id == oid:
+            return deal
+    key = oid.casefold()
+    for deal in session.deals:
+        if deal.order_id and deal.order_id.casefold() == key:
+            return deal
+    return None
+
+
 def build_session(
     accepted_deals: list[AcceptedDeal],
     *,
