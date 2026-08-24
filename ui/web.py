@@ -649,15 +649,14 @@ class TzkApi:
         from agent.bin_resolve import merge_decline_bins_and_prefixes
 
         _bins2, card_prefs = merge_decline_bins_and_prefixes([], raw_card)
+        # Нет BIN/TBC/префикса → отмена по сумме/лимиту/Visa/MC (все подходящие карты)
         if not bins and not include_tbc and not card_prefs:
-            if all_cards or visa_only or mastercard_only:
-                pass
-            elif bank:
+            if bank and not (all_cards or visa_only or mastercard_only):
                 return self._start_decline_or_redirect(
                     redirect=False,
                     decline_bank=str(bank or "tbc"),
                 )
-            return self._err("Включи TBC, BIN, префикс карты (5598…) или Visa/MC")
+            all_cards = True
         if visa_only and mastercard_only:
             return self._err("Нельзя Visa и Mastercard одновременно")
         limit = (
@@ -1037,6 +1036,7 @@ class TzkApi:
         self,
         plan: dict[str, Any] | None = None,
         ui_context: dict[str, Any] | None = None,
+        text: str = "",
     ) -> dict[str, Any]:
         from agent.executor import execute_plan
         from agent.schema import ActionPlan
@@ -1046,7 +1046,11 @@ class TzkApi:
         if not isinstance(plan, dict):
             return self._err("Нет plan для execute")
         try:
-            merged = ActionPlan.from_dict(plan).merge_agent_context(
+            merged = ActionPlan.from_dict(plan)
+            cmd = str(text or "").strip()
+            if cmd:
+                merged = merged.apply_text_hints(cmd)
+            merged = merged.merge_agent_context(
                 self._agent_ui_context(ui_context)
             ).finalize()
             err = merged.validate()

@@ -1137,7 +1137,11 @@ export function AgentCommandBar() {
     clearDeclineResult();
     try {
       const ui_context = buildUiContext(s);
-      const res = (await serverPost("/api/agent/execute", { plan, ui_context })) as {
+      const res = (await serverPost("/api/agent/execute", {
+        plan,
+        ui_context,
+        text: text.trim(),
+      })) as {
         ok?: boolean;
         error?: string;
       };

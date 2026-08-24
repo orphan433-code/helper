@@ -187,7 +187,7 @@ def parse_command_detailed(
     text: str, ctx: dict[str, Any]
 ) -> tuple[ActionPlan, dict[str, Any]]:
     """NL → ActionPlan + meta (tokens, raw JSON). Кеш истории — без Gemini."""
-    from agent.history import lookup, remember, touch
+    from agent.history import lookup, remember
 
     cleaned = str(text or "").strip()
     if not cleaned:
@@ -207,9 +207,10 @@ def parse_command_detailed(
         if err:
             agent_trace(f"parse: cache устарел ({err}) — идём в Gemini")
         else:
-            touch(cleaned)
             summary = plan.human_summary()
             agent_trace(f"parse: итог (cache) — {summary}")
+            # Обновить кеш обогащённым plan (новые поля: mastercard_only и т.п.)
+            remember(cleaned, plan.to_dict(), summary, source="cache")
             return plan, {
                 "cached": True,
                 "model": "cache",
@@ -217,7 +218,7 @@ def parse_command_detailed(
                 "body_chars": 0,
                 "usage": {},
                 "raw_text": "",
-                "parsed": cached["plan"],
+                "parsed": plan.to_dict(),
                 "summary": summary,
             }
 

@@ -487,6 +487,7 @@ def create_app() -> Any:
             "agent_execute",
             plan=body.get("plan"),
             ui_context=body.get("ui_context"),
+            text=body.get("text", ""),
         )
 
     @app.get("/api/agent/history")
