@@ -18,12 +18,17 @@ _REDIRECT_WORDS = ("редирект", "передай", "rematch", "redirect", 
 _TBC_WORDS = ("tbc",)
 _PENDING_WORDS = ("pending", "пендинг")
 _VISA_WORDS = ("visa", "виза")
+_MASTERCARD_RE = re.compile(
+    r"(?:мастер\s*кард|mastercard|\bmc\b|\bmk\b|\bмк\b)",
+    re.IGNORECASE,
+)
 _SKIP_BOG_WORDS = ("без bog", "skip bog", "не bog")
 
 _COUNT_RE = re.compile(
     r"(\d+)\s*(?:"
     r"сдел(?:к[аиуе]?|ок)?|deal|"
-    r"карт(?:[аыуе]?|ок)?|card"
+    r"карт(?:[аыуе]?|ок)?|card|"
+    r"штук(?:и|а)?|шт\.?"
     r")",
     re.IGNORECASE,
 )
@@ -110,6 +115,11 @@ def enrich_plan_from_text(plan: ActionPlan, user_text: str) -> ActionPlan:
         changed = True
     if any(w in low for w in _VISA_WORDS):
         out.visa_only = True
+        out.mastercard_only = False
+        changed = True
+    if _MASTERCARD_RE.search(low):
+        out.mastercard_only = True
+        out.visa_only = False
         changed = True
     if any(w in low for w in _SKIP_BOG_WORDS):
         out.skip_bog = True

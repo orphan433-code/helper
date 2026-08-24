@@ -98,6 +98,9 @@ async def preview_plan(plan: ActionPlan) -> dict[str, Any]:
             if plan.visa_only and not dapi.is_visa_card(row):
                 skipped["visa"] = skipped.get("visa", 0) + 1
                 continue
+            if plan.mastercard_only and not dapi.is_mastercard_card(row):
+                skipped["mastercard"] = skipped.get("mastercard", 0) + 1
+                continue
             if plan.max_remaining and not dapi.remaining_under_hours(
                 row, plan.max_remaining_hours
             ):
@@ -126,6 +129,12 @@ async def preview_plan(plan: ActionPlan) -> dict[str, Any]:
                 row, patterns=patterns, card_prefixes=card_prefixes
             ):
                 skipped["bank"] = skipped.get("bank", 0) + 1
+                continue
+            if plan.visa_only and not dapi.is_visa_card(row):
+                skipped["visa"] = skipped.get("visa", 0) + 1
+                continue
+            if plan.mastercard_only and not dapi.is_mastercard_card(row):
+                skipped["mastercard"] = skipped.get("mastercard", 0) + 1
                 continue
             if plan.max_remaining and not dapi.remaining_under_hours(
                 row, plan.max_remaining_hours
@@ -163,6 +172,7 @@ async def preview_plan(plan: ActionPlan) -> dict[str, Any]:
         "bin": "BIN",
         "bog": "BoG",
         "visa": "не Visa",
+        "mastercard": "не Mastercard",
         "remaining": "остаток времени",
     }
     skip_parts = [

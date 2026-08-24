@@ -611,6 +611,8 @@ class TzkApi:
         max_remaining_hours: float | None = None,
         card_prefixes: list[str] | str | None = None,
         all_cards: bool = False,
+        visa_only: bool = False,
+        mastercard_only: bool = False,
     ) -> dict[str, Any]:
         # pywebview: start_decline(["558328", …]) / start_decline(list, tbc)
         if isinstance(prefixes, bool) and bank is None:
@@ -648,14 +650,16 @@ class TzkApi:
 
         _bins2, card_prefs = merge_decline_bins_and_prefixes([], raw_card)
         if not bins and not include_tbc and not card_prefs:
-            if all_cards:
+            if all_cards or visa_only or mastercard_only:
                 pass
             elif bank:
                 return self._start_decline_or_redirect(
                     redirect=False,
                     decline_bank=str(bank or "tbc"),
                 )
-            return self._err("Включи TBC, BIN или префикс карты (5598…)")
+            return self._err("Включи TBC, BIN, префикс карты (5598…) или Visa/MC")
+        if visa_only and mastercard_only:
+            return self._err("Нельзя Visa и Mastercard одновременно")
         limit = (
             0
             if max_per_run in (0, "0", 0.0)
@@ -698,7 +702,9 @@ class TzkApi:
             max_amount=max_a,
             max_remaining=bool(max_remaining),
             max_remaining_hours=max_remaining_hours,
-            all_cards=bool(all_cards),
+            all_cards=bool(all_cards) or bool(visa_only) or bool(mastercard_only),
+            visa_only=bool(visa_only),
+            mastercard_only=bool(mastercard_only),
         )
 
     def start_redirect(
@@ -710,6 +716,7 @@ class TzkApi:
         deal_status: str | None = None,
         skip_bog: bool = False,
         visa_only: bool = False,
+        mastercard_only: bool = False,
         max_remaining: bool = False,
         redirect_prefixes: list[str] | str | None = None,
         redirect_card_prefixes: list[str] | str | None = None,
@@ -720,6 +727,7 @@ class TzkApi:
         deal_status: new (по умолчанию) или pending.
         По умолчанию все подряд. skip_bog=True — не редиректить BOG/548888….
         visa_only=True — только карты Visa (4…).
+        mastercard_only=True — только Mastercard (2…/5…).
         max_remaining=True — только Time remaining < 1ч (expiredAt).
         """
         # list[str] или comma-string (старый React join) — не итерировать str по символам
@@ -732,6 +740,8 @@ class TzkApi:
         ids = [str(x).strip() for x in raw_ids if str(x).strip()]
         if not ids:
             return self._err("Выбери хотя бы один аккаунт (104.1 / 104.2 / 104.3)")
+        if visa_only and mastercard_only:
+            return self._err("Нельзя Visa и Mastercard одновременно")
         status = str(deal_status or "new").strip().lower() or "new"
         if status not in ("new", "pending"):
             return self._err("deal_status: только new или pending")
@@ -772,6 +782,7 @@ class TzkApi:
         explicit_bins = bool(redirect_bins or redirect_card_prefs or raw_rp)
         filter_only = bool(
             visa_only
+            or mastercard_only
             or skip_bog
             or max_remaining
             or min_a is not None
@@ -806,6 +817,7 @@ class TzkApi:
             deal_status=status,
             skip_bog=bool(skip_bog),
             visa_only=bool(visa_only),
+            mastercard_only=bool(mastercard_only),
             max_remaining=bool(max_remaining),
             redirect_prefixes=redirect_bins,
             redirect_card_prefixes=redirect_card_prefs,
@@ -1065,6 +1077,7 @@ class TzkApi:
         decline_tbc: bool = False,
         skip_bog: bool = False,
         visa_only: bool = False,
+        mastercard_only: bool = False,
         max_remaining: bool = False,
         redirect_prefixes: list[str] | None = None,
         redirect_card_prefixes: list[str] | None = None,
@@ -1101,6 +1114,8 @@ class TzkApi:
                 filter_bits.append("пропуск BOG/548888")
             if visa_only:
                 filter_bits.append("только Visa")
+            if mastercard_only:
+                filter_bits.append("только Mastercard")
             if max_remaining:
                 filter_bits.append(
                     f"остаток < {(max_remaining_hours or REDIRECT_MAX_REMAINING_HOURS):g}ч"
@@ -1167,11 +1182,18 @@ class TzkApi:
                     amt_bits.append(
                         f"остаток < {(max_remaining_hours or REDIRECT_MAX_REMAINING_HOURS):g}ч"
                     )
+                scheme = (
+                    "только Mastercard"
+                    if mastercard_only
+                    else "только Visa"
+                    if visa_only
+                    else "все карты"
+                )
                 amt_note = f" · {' '.join(amt_bits)}" if amt_bits else ""
                 limit_word = "все подходящие" if n == 0 else f"первые {n}"
-                self._status = f"Отменяю сделки (все карты, {limit_word})…"
+                self._status = f"Отменяю сделки ({scheme}, {limit_word})…"
                 self._push_log(
-                    f"Отмена: все карты · сорт по remaining · {limit_word}{amt_note}",
+                    f"Отмена: {scheme} · сорт по remaining · {limit_word}{amt_note}",
                     service="decline",
                     status="section",
                 )
@@ -1207,6 +1229,7 @@ class TzkApi:
                 "decline_tbc": bool(decline_tbc),
                 "skip_bog": skip_bog,
                 "visa_only": visa_only,
+                "mastercard_only": mastercard_only,
                 "max_remaining": max_remaining,
                 "max_remaining_hours": max_remaining_hours,
                 "redirect_prefixes": redirect_prefixes or [],
@@ -1664,6 +1687,7 @@ class TzkApi:
         decline_tbc: bool = False,
         skip_bog: bool = False,
         visa_only: bool = False,
+        mastercard_only: bool = False,
         max_remaining: bool = False,
         redirect_prefixes: list[str] | None = None,
         redirect_card_prefixes: list[str] | None = None,
@@ -1692,6 +1716,8 @@ class TzkApi:
                 cmd.append("--skip-bog")
             if visa_only:
                 cmd.append("--visa-only")
+            if mastercard_only:
+                cmd.append("--mastercard-only")
             if max_remaining:
                 cmd.append("--max-remaining")
                 hours = max_remaining_hours or REDIRECT_MAX_REMAINING_HOURS
@@ -1739,6 +1765,10 @@ class TzkApi:
                     cmd.append("--max-remaining")
                     hours = max_remaining_hours or REDIRECT_MAX_REMAINING_HOURS
                     cmd.extend(["--max-remaining-hours", str(hours)])
+                if visa_only:
+                    cmd.append("--visa-only")
+                if mastercard_only:
+                    cmd.append("--mastercard-only")
             elif all_cards:
                 n = 0 if max_per_run == 0 else clamp_decline_limit(max_per_run)
                 cmd.append("--all-cards")
@@ -1751,6 +1781,10 @@ class TzkApi:
                     cmd.append("--max-remaining")
                     hours = max_remaining_hours or REDIRECT_MAX_REMAINING_HOURS
                     cmd.extend(["--max-remaining-hours", str(hours)])
+                if visa_only:
+                    cmd.append("--visa-only")
+                if mastercard_only:
+                    cmd.append("--mastercard-only")
             else:
                 bank = str(decline_bank or "tbc").strip().lower() or "tbc"
                 if bank not in ("tbc", "bog"):

@@ -189,6 +189,12 @@ def is_visa_card(row: dict[str, Any]) -> bool:
     return bool(digits) and digits.startswith("4")
 
 
+def is_mastercard_card(row: dict[str, Any]) -> bool:
+    """Mastercard: номер начинается с 5 (или 2 — range MC)."""
+    digits = account_digits(row)
+    return bool(digits) and digits[:1] in ("2", "5")
+
+
 def bank_matches(name: str | None, patterns: list[str]) -> bool:
     if not name or not patterns:
         return False
@@ -700,12 +706,12 @@ async def run(args: argparse.Namespace) -> int:
         )
     )
     visa_only = bool(
-        do_redirect
-        and (
-            getattr(args, "visa_only", False)
-            or ui_red.get("visa_only", False)
-        )
+        getattr(args, "visa_only", False)
+        or (do_redirect and ui_red.get("visa_only", False))
     )
+    mastercard_only = bool(getattr(args, "mastercard_only", False))
+    if visa_only and mastercard_only:
+        raise SystemExit("Нельзя --visa-only и --mastercard-only вместе")
     max_remaining = bool(getattr(args, "max_remaining", False)) or bool(
         do_redirect and ui_red.get("max_remaining", False)
     )
@@ -801,6 +807,8 @@ async def run(args: argparse.Namespace) -> int:
             print("[INFO] Пропуск BoG выключен — BoG не исключается отдельно")
         if visa_only:
             print("[INFO] Только Visa (карты 4…)")
+        if mastercard_only:
+            print("[INFO] Только Mastercard (карты 2…/5…)")
         if max_remaining:
             print(
                 f"[INFO] Только Time remaining < {max_remaining_hours:g} ч "
@@ -824,15 +832,20 @@ async def run(args: argparse.Namespace) -> int:
         if card_prefixes:
             bits.append(f"BIN {', '.join(p + '*' for p in card_prefixes)}")
         print(f"[INFO] Фильтр отмены ({bank_label}): {'; '.join(bits) or '—'}")
-        if ui_filter:
-            amt_bits = []
-            if min_amt is not None:
-                amt_bits.append(f">= {min_amt:g}")
-            if max_amt is not None:
-                amt_bits.append(f"<= {max_amt:g}")
+        if visa_only:
+            print("[INFO] Только Visa (карты 4…)")
+        if mastercard_only:
+            print("[INFO] Только Mastercard (карты 2…/5…)")
+        amt_bits = []
+        if min_amt is not None:
+            amt_bits.append(f">= {min_amt:g}")
+        if max_amt is not None:
+            amt_bits.append(f"<= {max_amt:g}")
+        if ui_filter or all_cards or visa_only or mastercard_only:
+            lim = max_per_run if max_per_run > 0 else "∞"
             print(
                 f"[INFO] Сортировка: остаток времени по возрастанию, "
-                f"берём первые {max_per_run}"
+                f"берём первые {lim}"
                 + (
                     f", сумма {' и '.join(amt_bits)}"
                     if amt_bits
@@ -881,6 +894,7 @@ async def run(args: argparse.Namespace) -> int:
     candidates: list[dict[str, Any]] = []
     skipped_bog = 0
     skipped_non_visa = 0
+    skipped_non_mc = 0
     skipped_remaining = 0
     skipped_redirect_bin = 0
     for row in rows:
@@ -896,6 +910,9 @@ async def run(args: argparse.Namespace) -> int:
             if visa_only and not is_visa_card(row):
                 skipped_non_visa += 1
                 continue
+            if mastercard_only and not is_mastercard_card(row):
+                skipped_non_mc += 1
+                continue
             if max_remaining and not remaining_under_hours(
                 row, max_remaining_hours
             ):
@@ -909,6 +926,12 @@ async def run(args: argparse.Namespace) -> int:
             if ui_filter and not deal_matches_bank(
                 row, patterns=patterns, card_prefixes=card_prefixes
             ):
+                continue
+            if visa_only and not is_visa_card(row):
+                skipped_non_visa += 1
+                continue
+            if mastercard_only and not is_mastercard_card(row):
+                skipped_non_mc += 1
                 continue
             if max_remaining and not remaining_under_hours(
                 row, max_remaining_hours
@@ -925,8 +948,10 @@ async def run(args: argparse.Namespace) -> int:
         print(
             f"[INFO] Пропущено (BOG/548888 и т.п.): {skipped_bog}"
         )
-    if do_redirect and skipped_non_visa:
+    if skipped_non_visa:
         print(f"[INFO] Пропущено (не Visa): {skipped_non_visa}")
+    if skipped_non_mc:
+        print(f"[INFO] Пропущено (не Mastercard): {skipped_non_mc}")
     if do_redirect and skipped_remaining:
         print(
             f"[INFO] Пропущено (остаток ≥ {max_remaining_hours:g} ч "
@@ -935,7 +960,7 @@ async def run(args: argparse.Namespace) -> int:
     if do_redirect and skipped_redirect_bin:
         print(f"[INFO] Пропущено (не BIN редиректа): {skipped_redirect_bin}")
 
-    if (not do_redirect) and ui_filter:
+    if not do_redirect:
         if max_remaining:
             print(
                 f"[INFO] Только Time remaining < {max_remaining_hours:g} ч "
@@ -1093,7 +1118,12 @@ def main() -> None:
     parser.add_argument(
         "--visa-only",
         action="store_true",
-        help="при --redirect: только Visa (номер начинается с 4)",
+        help="только Visa (4…); decline и redirect",
+    )
+    parser.add_argument(
+        "--mastercard-only",
+        action="store_true",
+        help="только Mastercard (2…/5…); decline и redirect",
     )
     parser.add_argument(
         "--max-remaining",

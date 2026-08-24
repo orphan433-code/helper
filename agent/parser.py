@@ -39,6 +39,7 @@ _SYSTEM = """Ты парсер команд для оператора платё
   "trader_labels": ["104.1","104.2","104.3"] — для redirect,
   "skip_bog": true|false — не редиректить BoG/548888,
   "visa_only": true|false — только Visa (4…),
+  "mastercard_only": true|false — только Mastercard (2…/5…),
   "max_remaining": true|false — только сделки с остатком времени МЕНЬШЕ порога,
   "max_remaining_hours": число (часы, по умолчанию 1),
   "all_matching": true|false — «все сделки» (без лимита, max_per_run=0),
@@ -50,7 +51,7 @@ _SYSTEM = """Ты парсер команд для оператора платё
 Правила (важно):
 - use_ui_defaults всегда false — BIN, суммы, количество ТОЛЬКО из команды, не из UI
 - «отмени/cancel/сними» → decline; «редирект/передай/rematch» → redirect
-- «10 сделок» / «5 карт» / «1 сделку» → max_per_run, all_matching=false
+- «10 сделок» / «5 карт» / «10 штук» / «1 сделку» → max_per_run, all_matching=false
 - «все» / «всех» / «all» → all_matching=true, max_per_run=0
 - «до 300 usdt» / «сумма до 300» → max_amount=300
 - «от 100» → min_amount=100
@@ -61,9 +62,13 @@ _SYSTEM = """Ты парсер команд для оператора платё
 - «5598» → decline_card_prefixes или redirect_card_prefixes по action
 - «tbc» → decline_tbc=true
 - «pending» → deal_status=pending
-- «visa» / «без bog» → visa_only / skip_bog для redirect
+- «visa» / «виза» → visa_only=true (decline и redirect)
+- «mastercard» / «мастеркард» / «мастер кард» / «mc» / «мк» → mastercard_only=true
+- «без bog» → skip_bog для redirect
+- Нельзя visa_only и mastercard_only одновременно
 - Не выдумывай trader_ids; trader_labels только если явно названы (104.1…)
 - Если BIN не указан — не подставляй из UI, оставь пустым
+- Если указан только Visa/MC без BIN — это нормально (mastercard_only / visa_only)
 """
 
 

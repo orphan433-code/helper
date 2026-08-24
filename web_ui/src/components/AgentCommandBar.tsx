@@ -182,6 +182,7 @@ function buildRequestSummary(plan: AgentPlan | null): RequestSummary | null {
     extras.push(`остаток < ${String(plan.max_remaining_hours ?? 1)} ч`);
   }
   if (plan.visa_only) extras.push("только Visa");
+  if (plan.mastercard_only) extras.push("только Mastercard");
   if (plan.skip_bog) extras.push("без BoG");
 
   return {

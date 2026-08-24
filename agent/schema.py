@@ -41,6 +41,7 @@ class ActionPlan:
     trader_labels: list[str] = field(default_factory=list)
     skip_bog: bool = False
     visa_only: bool = False
+    mastercard_only: bool = False
     max_remaining: bool = False
     max_remaining_hours: float = 1.0
     all_matching: bool = False
@@ -108,6 +109,7 @@ class ActionPlan:
             ],
             skip_bog=bool(raw.get("skip_bog")),
             visa_only=bool(raw.get("visa_only")),
+            mastercard_only=bool(raw.get("mastercard_only")),
             max_remaining=bool(raw.get("max_remaining")),
             max_remaining_hours=hours,
             all_matching=bool(raw.get("all_matching")),
@@ -192,14 +194,22 @@ class ActionPlan:
             lines.append(f"Остаток: меньше {self.max_remaining_hours:g} ч")
         if self.visa_only:
             lines.append("Только Visa")
+        if self.mastercard_only:
+            lines.append("Только Mastercard")
         if self.skip_bog:
             lines.append("Без BoG")
         return "\n".join(lines)
 
     def validate(self) -> str | None:
+        if self.visa_only and self.mastercard_only:
+            return "Нельзя Visa и Mastercard одновременно"
         if self.action == "decline":
             has_card = bool(
-                self.decline_bins or self.decline_card_prefixes or self.decline_tbc
+                self.decline_bins
+                or self.decline_card_prefixes
+                or self.decline_tbc
+                or self.visa_only
+                or self.mastercard_only
             )
             has_other = (
                 self.min_amount is not None
@@ -209,9 +219,9 @@ class ActionPlan:
                 or self.max_per_run != 10
             )
             if not has_card and self.use_ui_defaults:
-                return "Укажи BIN, префикс карты (5598…) или TBC для отмены"
+                return "Укажи BIN, префикс карты (5598…), Visa/MC или TBC для отмены"
             if not has_card and not has_other:
-                return "Уточни фильтры: BIN/префикс, сумму, лимит или «все»"
+                return "Уточни фильтры: BIN/префикс, Visa/MC, сумму, лимит или «все»"
         return None
 
     def apply_text_hints(self, user_text: str) -> ActionPlan:

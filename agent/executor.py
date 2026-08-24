@@ -30,6 +30,7 @@ def _resolve_trader_ids(plan: ActionPlan) -> list[str]:
 
 def execute_plan(api: Any, plan: ActionPlan) -> dict[str, Any]:
     """Вызов start_decline / start_redirect. Не трогаем runtime/deals_ui.yaml."""
+    scheme_only = bool(plan.visa_only or plan.mastercard_only)
     if plan.action == "decline":
         return api.start_decline(
             prefixes=list(plan.decline_bins),
@@ -41,10 +42,15 @@ def execute_plan(api: Any, plan: ActionPlan) -> dict[str, Any]:
             max_remaining_hours=plan.max_remaining_hours,
             card_prefixes=list(plan.decline_card_prefixes),
             all_cards=(
-                not plan.decline_bins
-                and not plan.decline_card_prefixes
-                and not plan.decline_tbc
+                scheme_only
+                or (
+                    not plan.decline_bins
+                    and not plan.decline_card_prefixes
+                    and not plan.decline_tbc
+                )
             ),
+            visa_only=bool(plan.visa_only),
+            mastercard_only=bool(plan.mastercard_only),
         )
 
     trader_ids = _resolve_trader_ids(plan)
@@ -59,6 +65,7 @@ def execute_plan(api: Any, plan: ActionPlan) -> dict[str, Any]:
         deal_status=plan.deal_status,
         skip_bog=bool(plan.skip_bog),
         visa_only=bool(plan.visa_only),
+        mastercard_only=bool(plan.mastercard_only),
         max_remaining=bool(plan.max_remaining),
         max_remaining_hours=hours if plan.max_remaining else None,
         redirect_prefixes=list(plan.redirect_bins),
