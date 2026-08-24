@@ -88,6 +88,41 @@ def ensure_venv() -> dict[str, Any]:
         }
     return {"ok": True, "log": out}
 
+
+def ensure_venv_quick(*, timeout_sec: float = 180.0) -> dict[str, Any]:
+    """Лёгкий sync зависимостей после update — без playwright (он роняет HTTP-запрос)."""
+    venv_py = ROOT / ".venv" / "bin" / "python"
+    req = ROOT / "requirements.txt"
+    if not venv_py.is_file():
+        return ensure_venv()
+    if not req.is_file():
+        return {"ok": True, "log": "нет requirements.txt — пропуск"}
+    try:
+        proc = subprocess.run(
+            [str(venv_py), "-m", "pip", "install", "-r", str(req)],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_sec,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "error": (
+                f"pip install > {timeout_sec:.0f}с — код уже скачан. "
+                "В терминале: bash ensure_venv.sh, потом перезапуск."
+            ),
+        }
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    if proc.returncode != 0:
+        return {
+            "ok": False,
+            "error": out[-800:] or f"pip exit {proc.returncode}",
+        }
+    return {"ok": True, "log": out[-400:] if out else "pip OK"}
+
+
 def update_status() -> dict[str, Any]:
     url, branch = repo_settings()
     git_dir = ROOT / ".git"
@@ -245,15 +280,16 @@ def apply_update() -> dict[str, Any]:
     if not result.get("ok"):
         return result
 
-    venv = ensure_venv()
+    # Полный ensure_venv (playwright) часто убивает HTTP-запрос → Failed to fetch.
+    # После update — только быстрый pip; playwright при необходимости: bash ensure_venv.sh
+    venv = ensure_venv_quick()
     result["venv_ok"] = bool(venv.get("ok"))
     if venv.get("ok"):
         result["venv_log"] = venv.get("log") or ""
     else:
         result["venv_error"] = venv.get("error") or "ensure_venv failed"
-        # код уже обновлён — не валим всё, но предупреждаем
         result["hint"] = (
-            "Код скачан, но .venv не собрался. Запусти: bash ensure_venv.sh "
-            "или bash setup.sh"
+            "Код скачан, но pip не доехал. В терминале: bash ensure_venv.sh "
+            "затем перезапуск сервера."
         )
     return result

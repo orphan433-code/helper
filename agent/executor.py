@@ -20,11 +20,15 @@ import decline_by_bank_api as dapi  # noqa: E402
 
 def _resolve_trader_ids(plan: ActionPlan) -> list[str]:
     cfg = load_config()
-    traders = dapi._resolve_active_traders(
-        cfg,
-        cli_ids=plan.trader_ids or None,
-        cli_labels=plan.trader_labels or None,
-    )
+    try:
+        traders = dapi._resolve_active_traders(
+            cfg,
+            cli_ids=plan.trader_ids or None,
+            cli_labels=plan.trader_labels or None,
+        )
+    except SystemExit as exc:
+        # CLI-скрипт делает sys.exit; в HTTP это был бы голый 500 Internal Server Error
+        raise ValueError(str(exc) or "Нет аккаунтов для редиректа") from exc
     return [tid for _label, tid in traders]
 
 

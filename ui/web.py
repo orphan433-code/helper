@@ -1062,6 +1062,8 @@ class TzkApi:
                 status="section",
             )
             return execute_plan(self, merged)
+        except SystemExit as exc:
+            return self._err(str(exc) or "Операция прервана")
         except Exception as exc:
             traceback.print_exc()
             return self._err(str(exc))

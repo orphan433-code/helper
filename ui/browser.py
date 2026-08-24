@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import sys
@@ -250,6 +251,16 @@ def create_app() -> Any:
     _ACTIVE_ENGINE = engine
     app = FastAPI(title="Tzk Browser", docs_url=None, redoc_url=None)
 
+    @app.exception_handler(Exception)
+    async def _unhandled(request: Any, exc: Exception) -> Any:
+        traceback.print_exc()
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            {"ok": False, "error": str(exc) or exc.__class__.__name__},
+            status_code=200,
+        )
+
     READ_ALWAYS = {
         "get_state",
         "poll_logs",
@@ -366,6 +377,28 @@ def create_app() -> Any:
             }
         return None
 
+    def _filter_kwargs(fn: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Отбросить неизвестные kwargs — защита от рассинхрона фронт/бэк."""
+        try:
+            sig = inspect.signature(fn)
+        except (TypeError, ValueError):
+            return kwargs
+        if any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        ):
+            return kwargs
+        allowed = {
+            name
+            for name, p in sig.parameters.items()
+            if name != "self"
+            and p.kind
+            in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+        }
+        return {k: v for k, v in kwargs.items() if k in allowed}
+
     async def _call(method: str, **kwargs: Any) -> Any:
         blocked = _guard(method)
         if blocked is not None:
@@ -373,17 +406,20 @@ def create_app() -> Any:
         fn = getattr(engine.api, method, None)
         if fn is None or not callable(fn):
             return {"ok": False, "error": f"Нет метода: {method}"}
+        filtered = _filter_kwargs(fn, kwargs)
         try:
-            return await asyncio.to_thread(lambda: fn(**kwargs))
-        except TypeError:
-            # positional-only quirks — try without names for empty
-            try:
-                return await asyncio.to_thread(fn)
-            except Exception as exc:
-                return {"ok": False, "error": str(exc)}
+            return await asyncio.to_thread(lambda: fn(**filtered))
         except Exception as exc:
             traceback.print_exc()
-            return {"ok": False, "error": str(exc)}
+            return {"ok": False, "error": str(exc) or exc.__class__.__name__}
+        except BaseException as exc:  # noqa: BLE001 — SystemExit из скриптов
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                traceback.print_exc()
+                return {
+                    "ok": False,
+                    "error": str(exc) or "Операция прервана (SystemExit)",
+                }
+            raise
 
     @app.post("/api/save_settings")
     async def save_settings(body: dict[str, Any]) -> Any:
@@ -466,7 +502,8 @@ def create_app() -> Any:
         )
 
     @app.post("/api/agent/parse")
-    async def agent_parse(body: dict[str, Any]) -> Any:
+    async def agent_parse(body: dict[str, Any] | None = None) -> Any:
+        body = body or {}
         return await _call(
             "agent_parse",
             text=body.get("text", ""),
@@ -474,7 +511,8 @@ def create_app() -> Any:
         )
 
     @app.post("/api/agent/preview")
-    async def agent_preview(body: dict[str, Any]) -> Any:
+    async def agent_preview(body: dict[str, Any] | None = None) -> Any:
+        body = body or {}
         return await _call(
             "agent_preview",
             plan=body.get("plan"),
@@ -482,7 +520,8 @@ def create_app() -> Any:
         )
 
     @app.post("/api/agent/execute")
-    async def agent_execute(body: dict[str, Any]) -> Any:
+    async def agent_execute(body: dict[str, Any] | None = None) -> Any:
+        body = body or {}
         return await _call(
             "agent_execute",
             plan=body.get("plan"),

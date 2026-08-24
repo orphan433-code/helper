@@ -252,7 +252,16 @@ export function AppShell() {
         alert: true,
       });
     } catch (e) {
-      const msg = String(e);
+      const raw = String(e);
+      const msg =
+        /failed to fetch/i.test(raw) || /networkerror/i.test(raw)
+          ? [
+              "Связь с сервером оборвалась (Failed to fetch).",
+              "Часто: долгий pip/playwright или процесс упал.",
+              "Проверь терминал runtjsnew — если мёртв, запусти снова.",
+              "Потом: bash ensure_venv.sh и кнопка ↻.",
+            ].join("\n")
+          : raw;
       appendLog(`[UPDATE] ${msg}\n`);
       setStatus("Ошибка обновления", "error");
       await openDialog({

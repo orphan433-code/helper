@@ -126,22 +126,63 @@ export async function apiCall<T extends Record<string, unknown>>(
 }
 
 export async function serverPost(path: string, body?: unknown) {
-  const r = await fetch(path, {
-    method: "POST",
-    credentials: "same-origin",
-    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  if (!r.ok) throw new Error(await r.text());
+  let r: Response;
+  try {
+    r = await fetch(path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    const raw = String(e instanceof Error ? e.message : e);
+    if (/failed to fetch/i.test(raw)) {
+      throw new Error(
+        "Сервер не ответил (Failed to fetch). Смотри терминал — часто процесс упал, перезапусти runtjsnew.",
+      );
+    }
+    throw e;
+  }
   const ct = r.headers.get("content-type") || "";
-  if (ct.includes("application/json")) return r.json();
+  const raw = await r.text();
+  let data: Record<string, unknown> = {};
+  if (ct.includes("application/json") && raw) {
+    try {
+      data = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!r.ok) {
+    const msg =
+      (typeof data.error === "string" && data.error) ||
+      raw.trim() ||
+      `HTTP ${r.status}`;
+    throw new Error(msg);
+  }
+  if (ct.includes("application/json") && raw) return data;
   return {};
 }
 
 export async function serverGet(path: string) {
   const r = await fetch(path, { method: "GET", credentials: "same-origin" });
-  if (!r.ok) throw new Error(await r.text());
   const ct = r.headers.get("content-type") || "";
-  if (ct.includes("application/json")) return r.json();
+  const raw = await r.text();
+  let data: Record<string, unknown> = {};
+  if (ct.includes("application/json") && raw) {
+    try {
+      data = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!r.ok) {
+    const msg =
+      (typeof data.error === "string" && data.error) ||
+      raw.trim() ||
+      `HTTP ${r.status}`;
+    throw new Error(msg);
+  }
+  if (ct.includes("application/json") && raw) return data;
   return {};
 }

@@ -6,12 +6,23 @@
   }
 
   async function apiPost(path, body) {
-    const r = await fetch(path, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    let r;
+    try {
+      r = await fetch(path, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+    } catch (e) {
+      const raw = String(e && e.message ? e.message : e);
+      if (/failed to fetch/i.test(raw)) {
+        throw new Error(
+          "Сервер не ответил (Failed to fetch). Часто процесс упал — смотри терминал, перезапусти runtjsnew."
+        );
+      }
+      throw e;
+    }
     if (!r.ok) {
       let msg = await r.text();
       try {
