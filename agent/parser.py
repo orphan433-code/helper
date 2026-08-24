@@ -62,8 +62,8 @@ _SYSTEM = """Ты парсер команд для оператора платё
 - «5598» → decline_card_prefixes или redirect_card_prefixes по action
 - «tbc» → decline_tbc=true
 - «pending» → deal_status=pending
-- «visa» / «виза» → visa_only=true (decline и redirect)
-- «mastercard» / «мастеркард» / «мастер кард» / «mc» / «мк» → mastercard_only=true
+- «visa» / «visas» / «виза» / «визы» / «виз» / «визу» → visa_only=true (decline и redirect)
+- «mastercard» / «master card» / «mastercards» / «мастеркард» / «мастеркарта» / «мастер карты» / «mc» / «mk» / «мк» → mastercard_only=true
 - «без bog» → skip_bog для redirect
 - Нельзя visa_only и mastercard_only одновременно
 - Не выдумывай trader_ids; trader_labels только если явно названы (104.1…)

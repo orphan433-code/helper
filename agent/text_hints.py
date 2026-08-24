@@ -17,9 +17,24 @@ _DECLINE_WORDS = ("отмен", "cancel", "сними", "decline", "отклон
 _REDIRECT_WORDS = ("редирект", "передай", "rematch", "redirect", "сделай редирект")
 _TBC_WORDS = ("tbc",)
 _PENDING_WORDS = ("pending", "пендинг")
-_VISA_WORDS = ("visa", "виза")
+# Visa / Mastercard — RU+EN, числа, склонения, аббревиатуры
+_VISA_RE = re.compile(
+    r"(?:"
+    r"\bvisas?\b"
+    r"|\bвиз(?:а|ы|у|е|ой|ею|ам|ами|ах)?\b"
+    r")",
+    re.IGNORECASE,
+)
 _MASTERCARD_RE = re.compile(
-    r"(?:мастер\s*кард|mastercard|\bmc\b|\bmk\b|\bмк\b)",
+    r"(?:"
+    r"\bmaster\s*-?\s*cards?\b"
+    r"|\bmastercard'?s?\b"
+    r"|\bмастер\s*-?\s*карт(?:а|ы|у|е|ой|ею|ам|ами|ах|ок)?\b"
+    r"|\bмастеркард(?:а|ы|у|е|ом|ами|ах|ов|с)?\b"
+    r"|\bmc\b"
+    r"|\bmk\b"
+    r"|\bмк\b"
+    r")",
     re.IGNORECASE,
 )
 _SKIP_BOG_WORDS = ("без bog", "skip bog", "не bog")
@@ -113,7 +128,7 @@ def enrich_plan_from_text(plan: ActionPlan, user_text: str) -> ActionPlan:
     if any(w in low for w in _PENDING_WORDS):
         out.deal_status = "pending"
         changed = True
-    if any(w in low for w in _VISA_WORDS):
+    if _VISA_RE.search(low):
         out.visa_only = True
         out.mastercard_only = False
         changed = True
