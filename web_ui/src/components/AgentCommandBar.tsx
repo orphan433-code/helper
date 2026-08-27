@@ -170,8 +170,15 @@ function buildRequestSummary(plan: AgentPlan | null): RequestSummary | null {
     if (prefs.length) extras.push(`карты ${prefs.map((p) => `${p}*`).join(", ")}`);
     const labels = (plan.trader_labels as string[] | undefined) || [];
     const ids = (plan.trader_ids as string[] | undefined) || [];
-    if (labels.length) traders.push(...labels);
-    else if (ids.length) extras.push(`${ids.length} акк.`);
+    if (labels.length) {
+      traders.push(...labels);
+    } else if (ids.length) {
+      const mapped = ids
+        .map((id) => TRADERS.find((t) => t.traderId === id)?.label)
+        .filter((label): label is string => Boolean(label));
+      if (mapped.length) traders.push(...mapped);
+      else extras.push(`${ids.length} акк.`);
+    }
   } else {
     if (plan.decline_tbc) extras.push("TBC");
     const prefs = (plan.decline_card_prefixes as string[] | undefined) || [];

@@ -19,6 +19,8 @@ import decline_by_bank_api as dapi  # noqa: E402
 
 
 def _resolve_trader_ids(plan: ActionPlan) -> list[str]:
+    if not plan.trader_ids and not plan.trader_labels:
+        return []
     cfg = load_config()
     try:
         traders = dapi._resolve_active_traders(

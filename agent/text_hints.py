@@ -48,6 +48,11 @@ _COUNT_RE = re.compile(
     re.IGNORECASE,
 )
 _ONE_DEAL_RE = re.compile(r"\b1\s+сдел", re.IGNORECASE)
+_FIRST_DEAL_RE = re.compile(
+    r"(?:самой\s+)?перв(?:ая|ую|ой|ые|ый|ое)\s+сдел",
+    re.IGNORECASE,
+)
+_SINGLE_DEAL_RE = re.compile(r"\bодн(?:у|а|ой)\s+сдел", re.IGNORECASE)
 _MAX_AMOUNT_RE = re.compile(
     r"(?:до|max|не\s+более|сумм[аы]?\s*до)\s*(\d+(?:[.,]\d+)?)\s*(?:usdt|usd|\$)?",
     re.IGNORECASE,
@@ -93,7 +98,11 @@ def enrich_plan_from_text(plan: ActionPlan, user_text: str) -> ActionPlan:
         out.max_per_run = max(1, int(m.group(1)))
         out.all_matching = False
         changed = True
-    elif _ONE_DEAL_RE.search(text):
+    elif (
+        _ONE_DEAL_RE.search(text)
+        or _FIRST_DEAL_RE.search(text)
+        or _SINGLE_DEAL_RE.search(text)
+    ):
         out.max_per_run = 1
         out.all_matching = False
         changed = True

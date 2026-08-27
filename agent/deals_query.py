@@ -53,6 +53,8 @@ def _decline_rules(plan: ActionPlan, cfg: dict) -> tuple[list[str], list[str], b
 
 
 def _resolve_traders(plan: ActionPlan, cfg: dict) -> list[tuple[str, str]]:
+    if not plan.trader_ids and not plan.trader_labels:
+        return []
     return dapi._resolve_active_traders(
         cfg,
         cli_ids=plan.trader_ids or None,
@@ -119,7 +121,9 @@ async def preview_plan(plan: ActionPlan) -> dict[str, Any]:
             candidates = candidates[:limit]
         deals_ui: list[dict[str, Any]] = []
         for i, row in enumerate(candidates):
-            label, _tid = dapi._pick_trader(traders, index=i)
+            label = ""
+            if traders:
+                label, _tid = dapi._pick_trader(traders, index=i)
             deals_ui.append(_deal_row(row, trader_label=label))
     else:
         patterns, card_prefixes, _tbc = _decline_rules(plan, cfg)

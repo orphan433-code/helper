@@ -129,17 +129,36 @@ class ActionPlan:
         return out
 
     def merge_agent_context(self, ctx: dict[str, Any]) -> ActionPlan:
-        """AI-команда: только аккаунты редиректа из UI. BIN/суммы/лимиты — из текста."""
+        """AI-команда: аккаунты редиректа всегда из UI «Куда». Запрос не меняет."""
         out = ActionPlan.from_dict(self.to_dict())
         out.use_ui_defaults = False
-        if out.action == "redirect" and not out.trader_ids and not out.trader_labels:
-            ids = [
-                str(x).strip()
-                for x in (ctx.get("redirect_selected_trader_ids") or [])
-                if str(x).strip()
-            ]
-            if ids:
-                out.trader_ids = ids
+        if out.action != "redirect":
+            return out
+        ids = [
+            str(x).strip()
+            for x in (ctx.get("redirect_selected_trader_ids") or [])
+            if str(x).strip()
+        ]
+        out.trader_ids = ids
+        out.trader_labels = []
+        if not ids:
+            return out
+        traders = ctx.get("available_traders") or []
+        by_id: dict[str, str] = {}
+        if isinstance(traders, list):
+            for item in traders:
+                if not isinstance(item, dict):
+                    continue
+                tid = str(item.get("id") or "").strip()
+                label = str(item.get("label") or "").strip()
+                if tid and label:
+                    by_id[tid] = label
+        labels: list[str] = []
+        for tid in ids:
+            label = by_id.get(tid)
+            if label and label not in labels:
+                labels.append(label)
+        out.trader_labels = labels
         return out
 
     def merge_ui_context(self, ctx: dict[str, Any]) -> ActionPlan:

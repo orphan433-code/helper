@@ -36,7 +36,7 @@ _SYSTEM = """Ты парсер команд для оператора платё
   "decline_tbc": true|false — TBC/4315 для decline,
   "redirect_bins": ["537524","557755"] — BIN каталога для redirect,
   "redirect_card_prefixes": ["5598","4315"] — любой префикс карты для redirect,
-  "trader_labels": ["104.1","104.2","104.3"] — для redirect,
+  "trader_labels": [] — всегда пусто, аккаунты редиректа из UI «Куда», не из команды,
   "skip_bog": true|false — не редиректить BoG/548888,
   "visa_only": true|false — только Visa (4…),
   "mastercard_only": true|false — только Mastercard (2…/5…),
@@ -66,28 +66,14 @@ _SYSTEM = """Ты парсер команд для оператора платё
 - «mastercard» / «master card» / «mastercards» / «мастеркард» / «мастеркарта» / «мастер карты» / «mc» / «mk» / «мк» → mastercard_only=true
 - «без bog» → skip_bog для redirect
 - Нельзя visa_only и mastercard_only одновременно
-- Не выдумывай trader_ids; trader_labels только если явно названы (104.1…)
+- trader_ids и trader_labels всегда []. Куда слать редирект задаёт UI, не команда. Не копируй 104.1/104.2/104.3.
 - Если BIN не указан — не подставляй из UI, оставь пустым
 - Если указан только Visa/MC без BIN — это нормально (mastercard_only / visa_only)
 """
 
 
-def _build_prompt(text: str, ctx: dict[str, Any]) -> str:
-    traders = ctx.get("available_traders") or []
-    note = ""
-    if isinstance(traders, list) and traders:
-        labels = [
-            str(t.get("label") or "").strip()
-            for t in traders
-            if isinstance(t, dict) and str(t.get("label") or "").strip()
-        ]
-        if labels:
-            note = (
-                "Аккаунты редиректа (только если явно названы в команде): "
-                + ", ".join(labels)
-                + "\n\n"
-            )
-    return f"{note}Команда пользователя:\n{text.strip()}\n"
+def _build_prompt(text: str, _ctx: dict[str, Any]) -> str:
+    return f"Команда пользователя:\n{text.strip()}\n"
 
 
 def _extract_json(raw: str) -> dict[str, Any]:

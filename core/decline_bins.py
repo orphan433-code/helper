@@ -7,7 +7,7 @@ DECLINE_BIN_PREFIXES: tuple[str, ...] = (
     "548888",
 )
 DECLINE_DEFAULT_PER_RUN = 10
-DECLINE_MAX_PER_RUN = 50
+DECLINE_MAX_PER_RUN = 2000
 
 
 def clamp_decline_limit(raw: object) -> int:
