@@ -11,6 +11,7 @@ import {
 import { TopBar } from "@/components/TopBar";
 import { RunView } from "@/components/RunView";
 import { DealsView } from "@/components/DealsView";
+import { AgentView } from "@/components/AgentView";
 import { LogView } from "@/components/LogView";
 import { RecoveryDialog } from "@/components/RecoveryDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -22,7 +23,7 @@ import { api, apiCall, serverPost } from "@/lib/api";
 import { useConsole } from "@/store/console";
 import { cn } from "@/lib/utils";
 
-type ViewId = "run" | "deals" | "log";
+type ViewId = "run" | "deals" | "agent" | "log";
 
 function NavDivider() {
   return <div className="mx-0.5 h-7 w-px shrink-0 bg-border" />;
@@ -277,7 +278,8 @@ export function AppShell() {
 
   const tabs: { id: ViewId; label: string }[] = [
     { id: "run", label: "Запуск" },
-    { id: "deals", label: "AI команда" },
+    { id: "deals", label: "Операции" },
+    { id: "agent", label: "AI команда" },
     { id: "log", label: "Журнал" },
   ];
 
@@ -299,6 +301,7 @@ export function AppShell() {
 
         {view === "run" && <RunView />}
         {view === "deals" && <DealsView />}
+        {view === "agent" && <AgentView />}
         {view === "log" && <LogView />}
       </div>
 

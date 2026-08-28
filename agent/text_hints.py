@@ -9,6 +9,7 @@ from agent.bin_resolve import (
     extract_prefixes_from_text,
     extract_redirect_prefixes_from_text,
 )
+from core.bank_bins import bins_for
 
 if TYPE_CHECKING:
     from agent.schema import ActionPlan
@@ -133,6 +134,12 @@ def enrich_plan_from_text(plan: ActionPlan, user_text: str) -> ActionPlan:
 
     if any(w in low for w in _TBC_WORDS):
         out.decline_tbc = True
+        tbc_bins = list(bins_for("tbc"))
+        seen = set(out.decline_bins)
+        for bin_code in tbc_bins:
+            if bin_code not in seen:
+                out.decline_bins.append(bin_code)
+                seen.add(bin_code)
         changed = True
     if any(w in low for w in _PENDING_WORDS):
         out.deal_status = "pending"

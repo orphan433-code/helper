@@ -25,12 +25,16 @@ export function TopBar() {
           <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-400">
             Телефон → вход → переводы → чеки
           </p>
-        ) : view === "log" ? (
+        ) : view === "deals" ? (
+          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-400">
+            Редирект · Отмена
+          </p>
+        ) : view === "agent" ? (
+          <span className="sr-only">AI команда</span>
+        ) : (
           <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-400">
             Журнал
           </p>
-        ) : (
-          <span className="sr-only">AI команда</span>
         )}
 
         <p

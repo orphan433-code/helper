@@ -7,6 +7,7 @@ from core.config import load_config, save_config
 from core.deals_ui_local import _patch_section, load_local
 from core.decline_bins import (
     DECLINE_BIN_PREFIXES,
+    DECLINE_DEFAULT_ON,
     DECLINE_DEFAULT_PER_RUN,
     clamp_decline_limit,
 )
@@ -209,7 +210,7 @@ def decline_bin_settings(_cfg: dict | None = None) -> dict[str, bool]:
     raw = block.get("bin_toggles") if isinstance(block, dict) else {}
     if not isinstance(raw, dict):
         raw = {}
-    return {p: bool(raw.get(p, True)) for p in DECLINE_BIN_PREFIXES}
+    return {p: bool(raw.get(p, p in DECLINE_DEFAULT_ON)) for p in DECLINE_BIN_PREFIXES}
 
 
 def decline_tbc_enabled(_cfg: dict | None = None) -> bool:

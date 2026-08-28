@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parent
 _REPO = ROOT.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
+from core.bank_bins import bins_for
 from core.decline_bins import (
     DECLINE_BIN_PREFIXES,
     DECLINE_DEFAULT_PER_RUN,
@@ -98,12 +99,12 @@ _BANK_PRESETS: dict[str, dict[str, Any]] = {
     "tbc": {
         "label": "TBC",
         "patterns": ["tbc"],
-        "card_prefixes": ["4315"],
+        "card_prefixes": list(bins_for("tbc")),
     },
     "bog": {
         "label": "Bank of Georgia",
         "patterns": ["bank of georgia", "georgia", "bog"],
-        "card_prefixes": ["548888"],
+        "card_prefixes": list(bins_for("bog")),
     },
 }
 
@@ -1139,7 +1140,7 @@ def main() -> None:
     parser.add_argument(
         "--tbc",
         action="store_true",
-        help="в отмену: TBC (имя TBC / карты 4315…) вместе с --prefix",
+        help="в отмену: TBC (имя TBC / BIN TBC из каталога) вместе с --prefix",
     )
     parser.add_argument(
         "--redirect-prefix",
@@ -1148,8 +1149,8 @@ def main() -> None:
         default=None,
         metavar="BIN",
         help=(
-            "BIN карты для редиректа (можно несколько раз): "
-            "537524 / 557755. Если указан — только эти карты."
+            "BIN карты для редиректа (можно несколько раз). "
+            "Каталог банков + 557755. Если указан — только эти карты."
         ),
     )
     parser.add_argument(
@@ -1175,9 +1176,8 @@ def main() -> None:
         default=None,
         metavar="BIN",
         help=(
-            "BIN карты для отмены (можно несколько раз): "
-            "558328 / 531125 / 516746 / 548888. "
-            "Сортировка по остатку времени, лимит --max-per-run (1–50)."
+            "BIN карты для отмены (можно несколько раз), каталог банков. "
+            "Сортировка по остатку времени, лимит --max-per-run."
         ),
     )
     parser.add_argument(

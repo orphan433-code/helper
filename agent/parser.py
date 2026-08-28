@@ -11,6 +11,7 @@ from typing import Any
 from agent.config import agent_settings
 from agent.schema import ActionPlan
 from agent.trace import agent_trace
+from core.bank_bins import catalog_prompt_line
 
 _GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -31,10 +32,10 @@ _SYSTEM = """Ты парсер команд для оператора платё
   "min_amount": число|null (USDT, минимум),
   "max_amount": число|null (USDT, максимум),
   "deal_status": "new" | "pending",
-  "decline_bins": ["558328","531125","516746","548888"] — полные BIN из каталога,
-  "decline_card_prefixes": ["5598","4315"] — любой префикс карты (4+ цифр), если нет в каталоге,
-  "decline_tbc": true|false — TBC/4315 для decline,
-  "redirect_bins": ["537524","557755"] — BIN каталога для redirect,
+  "decline_bins": ["400881","548888"] — полные BIN из каталога банков,
+  "decline_card_prefixes": ["5598"] — любой префикс карты (4+ цифр), если нет в каталоге,
+  "decline_tbc": true|false — TBC для decline (BIN TBC из каталога),
+  "redirect_bins": ["537524","411634"] — BIN каталога для redirect,
   "redirect_card_prefixes": ["5598","4315"] — любой префикс карты для redirect,
   "trader_labels": [] — всегда пусто, аккаунты редиректа из UI «Куда», не из команды,
   "skip_bog": true|false — не редиректить BoG/548888,
@@ -57,10 +58,10 @@ _SYSTEM = """Ты парсер команд для оператора платё
 - «от 100» → min_amount=100
 - «меньше часа» / «остаток < 1ч» → max_remaining=true, max_remaining_hours=1
 - Любые 4+ цифры карты: decline → decline_card_prefixes или decline_bins; redirect → redirect_card_prefixes или redirect_bins
-- Катalog decline BIN: 558328,531125,516746,548888. Redirect BIN: 537524,557755
+- Каталог BIN (отмена и редирект): """ + catalog_prompt_line() + """
 - «5488» → decline_bins ["548888"]; «537524» при redirect → redirect_bins
 - «5598» → decline_card_prefixes или redirect_card_prefixes по action
-- «tbc» → decline_tbc=true
+- «tbc» → decline_tbc=true и BIN TBC из каталога
 - «pending» → deal_status=pending
 - «visa» / «visas» / «виза» / «визы» / «виз» / «визу» → visa_only=true (decline и redirect)
 - «mastercard» / «master card» / «mastercards» / «мастеркард» / «мастеркарта» / «мастер карты» / «mc» / «mk» / «мк» → mastercard_only=true

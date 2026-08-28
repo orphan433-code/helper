@@ -20,11 +20,28 @@ bank_decline:
   presets:
     tbc:
       patterns: [tbc]
-      card_prefixes: ["4315"]
+      card_prefixes:
+        - "400881"
+        - "412742"
+        - "415479"
+        - "431570"
+        - "431571"
+        - "516185"
+        - "518974"
+        - "521026"
+        - "537493"
     bog:
       label: Bank of Georgia
       patterns: ["bank of georgia", georgia, bog]
-      card_prefixes: ["548888"]
+      card_prefixes:
+        - "411634"
+        - "414051"
+        - "414052"
+        - "429594"
+        - "516746"
+        - "531125"
+        - "548888"
+        - "558328"
   find_new_type: buyAll
   find_new_limit: 50
 

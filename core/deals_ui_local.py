@@ -7,7 +7,11 @@ from typing import Any
 
 import yaml
 
-from core.decline_bins import DECLINE_BIN_PREFIXES, DECLINE_DEFAULT_PER_RUN
+from core.decline_bins import (
+    DECLINE_BIN_PREFIXES,
+    DECLINE_DEFAULT_ON,
+    DECLINE_DEFAULT_PER_RUN,
+)
 from core.paths import ROOT
 from core.pipeline_bins import PIPELINE_BIN_PREFIXES
 from core.redirect_bins import REDIRECT_BIN_PREFIXES, normalize_redirect_prefixes
@@ -32,7 +36,7 @@ _DEFAULT: dict[str, Any] = {
         "max_per_run": str(DECLINE_DEFAULT_PER_RUN),
         "min_amount": "",
         "max_amount": "",
-        "bin_toggles": {p: True for p in DECLINE_BIN_PREFIXES},
+        "bin_toggles": {p: p in DECLINE_DEFAULT_ON for p in DECLINE_BIN_PREFIXES},
     },
 }
 

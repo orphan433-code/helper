@@ -32,6 +32,22 @@ export const BANK_BINS: BankBinRow[] = [
   },
 ];
 
+export function bankAllBins(row: BankBinRow): string[] {
+  return [...row.visa, ...row.mastercard];
+}
+
+export function allCatalogBins(): string[] {
+  return BANK_BINS.flatMap(bankAllBins);
+}
+
+export const EXTRA_REDIRECT_BINS = ["557755"] as const;
+
+export const DEFAULT_DECLINE_BINS: string[] = BANK_BINS.flatMap((row) => {
+  if (row.id === "tbc") return bankAllBins(row);
+  if (row.id === "bog") return [...row.mastercard];
+  return [];
+});
+
 export function formatBinMask(bin: string): string {
   const d = bin.replace(/\D/g, "").slice(0, 6);
   const padded = d.padEnd(6, "*");

@@ -10,6 +10,23 @@ import {
   type StatusKind,
 } from "@/lib/types";
 import { clearTitleAttention, grabWindowAttention } from "@/lib/attention";
+import {
+  allCatalogBins,
+  DEFAULT_DECLINE_BINS,
+  EXTRA_REDIRECT_BINS,
+} from "@/lib/bankBins";
+
+const CATALOG_BINS = allCatalogBins();
+const REDIRECT_FALLBACK_LIST = [
+  ...CATALOG_BINS,
+  ...EXTRA_REDIRECT_BINS.filter((b) => !CATALOG_BINS.includes(b)),
+];
+const DECLINE_FALLBACK_TOGGLES = Object.fromEntries(
+  CATALOG_BINS.map((p) => [p, DEFAULT_DECLINE_BINS.includes(p)]),
+);
+const REDIRECT_FALLBACK_TOGGLES = Object.fromEntries(
+  REDIRECT_FALLBACK_LIST.map((p) => [p, false]),
+);
 
 function emptyProgress(title: string): ProgressPanel {
   return {
@@ -227,7 +244,7 @@ type Settings = {
 };
 
 type ConsoleState = {
-  view: "run" | "deals" | "log";
+  view: "run" | "deals" | "agent" | "log";
   statusText: string;
   statusKind: StatusKind;
   statusLabel: string;
@@ -329,18 +346,10 @@ export const useConsole = create<ConsoleState>((set, get) => ({
       "redir-104-2": true,
       "redir-104-3": true,
     },
-    redirectBinList: ["537524", "557755"],
-    redirectBins: {
-      "537524": false,
-      "557755": false,
-    },
-    declineBinList: ["558328", "531125", "516746", "548888"],
-    declineBins: {
-      "558328": true,
-      "531125": true,
-      "516746": true,
-      "548888": true,
-    },
+    redirectBinList: REDIRECT_FALLBACK_LIST,
+    redirectBins: { ...REDIRECT_FALLBACK_TOGGLES },
+    declineBinList: [...CATALOG_BINS],
+    declineBins: { ...DECLINE_FALLBACK_TOGGLES },
     declineTbc: true,
     declineMax: "10",
     declineMinAmt: "",
@@ -509,7 +518,7 @@ export const useConsole = create<ConsoleState>((set, get) => ({
             : s.declineBins;
         const next: Record<string, boolean> = {};
         for (const p of list) {
-          next[p] = raw[p] !== false;
+          next[p] = p in raw ? raw[p] !== false : DEFAULT_DECLINE_BINS.includes(p);
         }
         return next;
       })(),

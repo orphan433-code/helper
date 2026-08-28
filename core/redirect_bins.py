@@ -1,21 +1,11 @@
-"""BIN редиректа: список в коде, едет через git pull."""
+"""BIN редиректа: каталог банков + старый extra BIN. Едет через git pull."""
 
-REDIRECT_BIN_PREFIXES: tuple[str, ...] = (
-    "537524",
-    "557755",
-)
+from core.bank_bins import EXTRA_REDIRECT_BINS, all_catalog_bins, normalize_known_prefixes
+
+_catalog = all_catalog_bins()
+_extra = tuple(p for p in EXTRA_REDIRECT_BINS if p not in _catalog)
+REDIRECT_BIN_PREFIXES: tuple[str, ...] = (*_catalog, *_extra)
 
 
 def normalize_redirect_prefixes(raw: object) -> list[str]:
-    wanted: set[str] = set()
-    if isinstance(raw, str):
-        items = raw.split(",")
-    elif isinstance(raw, (list, tuple)):
-        items = list(raw)
-    else:
-        items = []
-    for item in items:
-        digits = "".join(ch for ch in str(item) if ch.isdigit())
-        if digits:
-            wanted.add(digits)
-    return [p for p in REDIRECT_BIN_PREFIXES if p in wanted]
+    return normalize_known_prefixes(raw, REDIRECT_BIN_PREFIXES)
