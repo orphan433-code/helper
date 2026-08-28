@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   ArrowRight,
+  CreditCard,
   History,
   Loader2,
   Send,
@@ -29,6 +30,12 @@ import { Input } from "@/components/ui/input";
 import { RippleButton } from "@/components/ui/ripple-button";
 import { Switch } from "@/components/ui/switch";
 import { serverGet, serverPost } from "@/lib/api";
+import {
+  BANK_BINS,
+  buildBinCommand,
+  formatBinMask,
+  type BankBinRow,
+} from "@/lib/bankBins";
 import { TRADERS } from "@/lib/types";
 import { useConsole } from "@/store/console";
 import { cn } from "@/lib/utils";
@@ -175,7 +182,7 @@ function buildRequestSummary(plan: AgentPlan | null): RequestSummary | null {
     } else if (ids.length) {
       const mapped = ids
         .map((id) => TRADERS.find((t) => t.traderId === id)?.label)
-        .filter((label): label is string => Boolean(label));
+        .filter((label): label is NonNullable<typeof label> => Boolean(label));
       if (mapped.length) traders.push(...mapped);
       else extras.push(`${ids.length} акк.`);
     }
@@ -335,12 +342,14 @@ function AgentHeaderCta({
   historyCount,
   favoritesCount,
   onOpenKuda,
+  onOpenBins,
   onOpenHistory,
 }: {
   selectedCount: number;
   historyCount: number;
   favoritesCount: number;
   onOpenKuda: () => void;
+  onOpenBins: () => void;
   onOpenHistory: () => void;
 }) {
   return (
@@ -355,6 +364,17 @@ function AgentHeaderCta({
         <span className="font-semibold tabular-nums text-foreground">
           {selectedCount}/{TRADERS.length}
         </span>
+      </RippleButton>
+      <RippleButton
+        type="button"
+        onClick={onOpenBins}
+        rippleColor="#cbd5e1"
+        className={BTN_GHOST}
+        aria-label="BIN справочник"
+        data-testid="bin-directory"
+      >
+        <CreditCard className="size-3.5" />
+        BIN
       </RippleButton>
       <RippleButton
         type="button"
@@ -379,6 +399,7 @@ function agentToolbar(
   historyCount: number,
   favoritesCount: number,
   setKudaOpen: (v: boolean) => void,
+  setBinOpen: (v: boolean) => void,
   setHistoryOpen: (v: boolean) => void,
 ) {
   return (
@@ -393,6 +414,7 @@ function agentToolbar(
         historyCount={historyCount}
         favoritesCount={favoritesCount}
         onOpenKuda={() => setKudaOpen(true)}
+        onOpenBins={() => setBinOpen(true)}
         onOpenHistory={() => setHistoryOpen(true)}
       />
     </div>
@@ -626,6 +648,139 @@ function CountUp({ value }: { value: number }) {
   return <>{n}</>;
 }
 
+function BinChip({
+  bin,
+  disabled,
+  onPick,
+}: {
+  bin: string;
+  disabled: boolean;
+  onPick: (bin: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      title={`Вставить ${bin}`}
+      onClick={() => onPick(bin)}
+      className="block w-full cursor-pointer rounded-md px-1 py-0.5 text-left font-mono text-[11px] tabular-nums text-slate-800 hover:bg-slate-100 disabled:opacity-50"
+    >
+      {formatBinMask(bin)}
+    </button>
+  );
+}
+
+function BinDirectoryPanel({
+  open,
+  onOpenChange,
+  disabled,
+  onInsert,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  disabled: boolean;
+  onInsert: (text: string) => void;
+}) {
+  const [action, setAction] = useState<"decline" | "redirect">("decline");
+
+  const insertBank = (row: BankBinRow) => {
+    const bins = [...row.visa, ...row.mastercard];
+    onInsert(buildBinCommand(action, bins));
+    onOpenChange(false);
+  };
+
+  const insertBin = (bin: string) => {
+    onInsert(buildBinCommand(action, [bin]));
+    onOpenChange(false);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg gap-0 p-0">
+        <div className="border-b border-border/50 px-5 pb-4 pt-5">
+          <DialogHeader className="gap-1.5">
+            <DialogTitle>BIN банков</DialogTitle>
+            <DialogDescription>
+              Клик по банку или BIN — готовый запрос отмены или редиректа в поле.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="mt-3 flex gap-1 rounded-xl bg-muted/60 p-1">
+            <button
+              type="button"
+              onClick={() => setAction("decline")}
+              className={cn(
+                "flex-1 rounded-lg px-2 py-1.5 text-xs font-semibold transition",
+                action === "decline"
+                  ? "bg-white text-rose-800 shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              onClick={() => setAction("redirect")}
+              className={cn(
+                "flex-1 rounded-lg px-2 py-1.5 text-xs font-semibold transition",
+                action === "redirect"
+                  ? "bg-white text-blue-900 shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              Редирект
+            </button>
+          </div>
+        </div>
+        <div className="max-h-[min(60vh,28rem)] overflow-auto">
+          <table className="w-full border-collapse text-left text-sm">
+            <thead className="sticky top-0 bg-white">
+              <tr className="border-b border-slate-200 text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-2.5 font-bold">Банк</th>
+                <th className="px-3 py-2.5 font-bold">Visa</th>
+                <th className="px-3 py-2.5 font-bold">Mastercard</th>
+              </tr>
+            </thead>
+            <tbody>
+              {BANK_BINS.map((row) => (
+                <tr key={row.id} className="align-top border-b border-slate-200">
+                  <td className="px-4 py-2.5">
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => insertBank(row)}
+                      className="cursor-pointer text-left text-xs font-bold uppercase tracking-wide text-slate-900 hover:text-primary disabled:opacity-50"
+                    >
+                      {row.name}
+                    </button>
+                  </td>
+                  <td className="px-3 py-2">
+                    {row.visa.length ? (
+                      row.visa.map((bin) => (
+                        <BinChip key={bin} bin={bin} disabled={disabled} onPick={insertBin} />
+                      ))
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
+                    {row.mastercard.length ? (
+                      row.mastercard.map((bin) => (
+                        <BinChip key={bin} bin={bin} disabled={disabled} onPick={insertBin} />
+                      ))
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function KudaPanel({
   open,
   onOpenChange,
@@ -785,6 +940,7 @@ function IdleView({
   favoritesCount,
   setHistoryOpen,
   setKudaOpen,
+  setBinOpen,
   busy,
   recentPresets,
 }: {
@@ -798,6 +954,7 @@ function IdleView({
   favoritesCount: number;
   setHistoryOpen: (v: boolean) => void;
   setKudaOpen: (v: boolean) => void;
+  setBinOpen: (v: boolean) => void;
   busy: "parse" | "preview" | "execute" | null;
   recentPresets: HistoryItem[];
 }) {
@@ -809,6 +966,7 @@ function IdleView({
         historyCount,
         favoritesCount,
         setKudaOpen,
+        setBinOpen,
         setHistoryOpen,
       )}
     >
@@ -842,6 +1000,7 @@ function ResultsView({
   favoritesCount,
   setHistoryOpen,
   setKudaOpen,
+  setBinOpen,
 }: {
   busyOrRunning: boolean;
   busy: "parse" | "preview" | "execute" | null;
@@ -856,6 +1015,7 @@ function ResultsView({
   favoritesCount: number;
   setHistoryOpen: (v: boolean) => void;
   setKudaOpen: (v: boolean) => void;
+  setBinOpen: (v: boolean) => void;
 }) {
   const req = buildRequestSummary(plan);
   const matched = preview?.matched ?? 0;
@@ -879,6 +1039,7 @@ function ResultsView({
         historyCount,
         favoritesCount,
         setKudaOpen,
+        setBinOpen,
         setHistoryOpen,
       )}
     >
@@ -1032,6 +1193,7 @@ export function AgentCommandBar() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [kudaOpen, setKudaOpen] = useState(false);
+  const [binOpen, setBinOpen] = useState(false);
 
   const favorites = useMemo(() => history.filter((h) => h.favorite), [history]);
   const recent = useMemo(() => history.filter((h) => !h.favorite), [history]);
@@ -1230,6 +1392,7 @@ export function AgentCommandBar() {
             favoritesCount={favorites.length}
             setHistoryOpen={setHistoryOpen}
             setKudaOpen={setKudaOpen}
+            setBinOpen={setBinOpen}
           />
         ) : (
           <IdleView
@@ -1243,11 +1406,22 @@ export function AgentCommandBar() {
             favoritesCount={favorites.length}
             setHistoryOpen={setHistoryOpen}
             setKudaOpen={setKudaOpen}
+            setBinOpen={setBinOpen}
             busy={busy}
             recentPresets={recentPresets}
           />
         )}
       </div>
+
+      <BinDirectoryPanel
+        open={binOpen}
+        onOpenChange={setBinOpen}
+        disabled={busyOrRunning}
+        onInsert={(t) => {
+          setText(t);
+          reset();
+        }}
+      />
 
       <KudaPanel
         open={kudaOpen}
