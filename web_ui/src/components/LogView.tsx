@@ -35,7 +35,7 @@ export function LogView() {
     <BlurFade delay={0.05} inView>
     <BentoCard
       name="Журнал"
-      description={`${logs.length} событий`}
+      description={logs.length ? `${logs.length}` : undefined}
       cta={
         <div className="flex gap-2">
           <Button variant="ghost" size="sm" onClick={() => clearLogs()}>
@@ -53,7 +53,7 @@ export function LogView() {
           onChange={(e) => setQ(e.target.value)}
           placeholder="Поиск…"
         />
-        <div className="max-h-[560px] overflow-auto rounded-xl border border-border bg-white font-mono text-xs">
+        <div className="max-h-[560px] overflow-auto rounded-xl border border-border/40 bg-background/70 font-mono text-xs backdrop-blur-xl">
           {filtered.length === 0 ? (
             <div className="p-10 text-center text-muted-foreground">Пока пусто</div>
           ) : (
@@ -66,7 +66,7 @@ export function LogView() {
                 <span
                   className={cn(
                     "font-bold uppercase",
-                    l.level === "error" && "text-red-600",
+                    l.level === "error" && "text-danger",
                     l.level === "warning" && "text-amber-600",
                     l.level === "info" && "text-slate-600",
                   )}

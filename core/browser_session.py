@@ -12,8 +12,6 @@ from playwright.async_api import BrowserContext, Page, Playwright, async_playwri
 
 from core.logkit import debug, info, warn
 
-from core.paths import ROOT
-
 _lock = threading.Lock()
 _registered: BrowserSession | None = None
 
@@ -41,6 +39,8 @@ class BrowserSession:
 
 
 _VIEWPORT = {"width": 1400, "height": 900}
+# Логин: 100% масштаб, окно как обычный Chrome (~16:10 ноутбук).
+_LOGIN_WINDOW = {"width": 1440, "height": 900}
 _ZOOM_STYLE_JS = """
 (z) => {
   if (!z || Math.abs(z - 1) < 1e-6) return;
@@ -126,34 +126,85 @@ def _install_zoom_hooks(context: BrowserContext, zoom: float):
     return _hook
 
 
+async def _fit_os_window(
+    context: BrowserContext,
+    *,
+    width: int,
+    height: int,
+) -> None:
+    """Профиль Chrome помнит крошечное окно — вернуть нормальный размер."""
+    for page in context.pages:
+        try:
+            if page.is_closed():
+                continue
+            cdp = await context.new_cdp_session(page)
+            win = await cdp.send("Browser.getWindowForTarget")
+            await cdp.send(
+                "Browser.setWindowBounds",
+                {
+                    "windowId": win["windowId"],
+                    "bounds": {
+                        "width": width,
+                        "height": height,
+                        "windowState": "normal",
+                    },
+                },
+            )
+        except Exception:
+            continue
+        break
+
+
 async def launch_browser(
     cfg: dict,
     *,
     headless: bool | None = None,
+    zoom: float | None = None,
+    window_size: dict[str, int] | None = None,
+    for_login: bool = False,
+    service: str | None = None,
 ) -> BrowserSession:
     """Запуск persistent Chromium с профилем из config.
 
     headless=None — взять из config.yaml;
     для входа всегда передавай headless=False, иначе окна не будет видно.
+    for_login=True — масштаб 100% и окно 1440×900, игнор page_zoom.
+    service=eze — отдельный профиль EasySend, не HZ.
     """
+    from core.host_session import profile_dir
+
     # Старый сеанс мог остаться после ошибки/стопа — сначала чистый старт.
     await close_before_new_run()
     browser_cfg = cfg["browser"]
-    profile = (ROOT / browser_cfg["user_data_dir"]).resolve()
-    zoom = float(browser_cfg.get("page_zoom", 1.0) or 1.0)
+    profile = profile_dir(cfg, service=service)
+    if for_login:
+        zoom = 1.0
+        window_size = window_size or _LOGIN_WINDOW
+    if zoom is None:
+        zoom = float(browser_cfg.get("page_zoom", 1.0) or 1.0)
+    else:
+        zoom = float(zoom or 1.0)
+    size = window_size or _VIEWPORT
+    width = int(size.get("width") or _VIEWPORT["width"])
+    height = int(size.get("height") or _VIEWPORT["height"])
     headless_flag = (
         bool(browser_cfg.get("headless", False))
         if headless is None
         else bool(headless)
     )
     playwright = await async_playwright().start()
+    args = ["--disable-blink-features=AutomationControlled"]
+    if not headless_flag:
+        args.append(f"--window-size={width},{height}")
     context = await playwright.chromium.launch_persistent_context(
         user_data_dir=str(profile),
         headless=headless_flag,
-        viewport={"width": _VIEWPORT["width"], "height": _VIEWPORT["height"]},
+        viewport={"width": width, "height": height},
         locale="ru-RU",
-        args=["--disable-blink-features=AutomationControlled"],
+        args=args,
     )
+    if for_login and not headless_flag:
+        await _fit_os_window(context, width=width, height=height)
     if abs(zoom - 1.0) >= 1e-6:
         await context.add_init_script(_zoom_init_script(zoom))
         hook = _install_zoom_hooks(context, zoom)

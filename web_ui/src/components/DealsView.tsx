@@ -1,41 +1,61 @@
-import { type ReactNode } from "react";
+import { useState } from "react";
 import { BlurFade } from "@/components/ui/blur-fade";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { BentoCard, BentoGrid } from "@/components/ui/bento-grid";
 import { RippleButton } from "@/components/ui/ripple-button";
-import { api, apiCall } from "@/lib/api";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  BANK_BINS,
-  EXTRA_REDIRECT_BINS,
-  bankAllBins,
-  type BankBinRow,
-} from "@/lib/bankBins";
+  CollapsibleBlock,
+  Field,
+  FilterChip,
+  FilterChipRow,
+  Segmented,
+} from "@/components/filters";
+import { bankFilterHint, BinPicker } from "@/components/BinPicker";
+import { api, apiCall, serverPost } from "@/lib/api";
+import { EXTRA_REDIRECT_BINS } from "@/lib/bankBins";
 import { TRADERS } from "@/lib/types";
 import { useConsole } from "@/store/console";
-import { cn } from "@/lib/utils";
+import {
+  buildUiContext,
+  CommandPreviewPanel,
+  type AgentPlan,
+  type AgentPreview,
+} from "@/components/CommandPreview";
 
-function selectedBankSummary(bins: string[]): string {
-  const parts: string[] = [];
-  for (const row of BANK_BINS) {
-    const n = bankAllBins(row).filter((b) => bins.includes(b)).length;
-    if (n) parts.push(`${row.name} ${n}`);
-  }
-  for (const extra of EXTRA_REDIRECT_BINS) {
-    if (bins.includes(extra)) parts.push(extra);
-  }
-  return parts.join(" + ");
+function optAmount(raw: string): number | null {
+  const t = raw.trim().replace(",", ".");
+  if (!t) return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
 }
+
+type OpsPending = {
+  kind: "redirect" | "decline";
+  status?: string;
+  bins: string[];
+  maxN: number;
+  mcOnly?: boolean;
+};
 
 export function DealsView() {
   const s = useConsole((st) => st.settings);
   const patch = useConsole((st) => st.patchSettings);
   const running = useConsole((st) => st.running);
   const jobMode = useConsole((st) => st.jobMode);
+  const loginHzOk = useConsole((st) => st.loginHzOk);
+  const loginEzeOk = useConsole((st) => st.loginEzeOk);
   const appendLog = useConsole((st) => st.appendLog);
   const openDialog = useConsole((st) => st.openDialog);
   const clearDeclineResult = useConsole((st) => st.clearDeclineResult);
+
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState<"preview" | "execute" | null>(null);
+  const [plan, setPlan] = useState<AgentPlan | null>(null);
+  const [preview, setPreview] = useState<AgentPreview | null>(null);
+  const [pending, setPending] = useState<OpsPending | null>(null);
+  const [redirBanksOpen, setRedirBanksOpen] = useState(false);
+  const [declineBanksOpen, setDeclineBanksOpen] = useState(false);
 
   const err = (e: string) => {
     appendLog(`[ОШИБКА] ${e}`);
@@ -43,16 +63,37 @@ export function DealsView() {
   };
 
   const opsBusy = running && (jobMode === "redirect" || jobMode === "decline");
+  const previewing = previewOpen || !!previewBusy;
   const selectedLabels = TRADERS.filter((t) => s.redirAccounts[t.id]).map((t) => t.label);
   const selectedTraders = TRADERS.filter((t) => s.redirAccounts[t.id]).map((t) => t.traderId);
 
-  const extraRedirect = EXTRA_REDIRECT_BINS.filter((b) => s.redirectBinList.includes(b));
+  const extraRedirect = [...EXTRA_REDIRECT_BINS];
+  const redirectCatalog = [...new Set([...s.redirectBinList, ...extraRedirect])];
 
   const patchRedirectBins = (next: Record<string, boolean>) => patch({ redirectBins: next });
   const patchDeclineBins = (next: Record<string, boolean>) => patch({ declineBins: next });
 
+  const setDeclineService = async (next: "hz" | "eze") => {
+    if (opsBusy || next === s.declineService) return;
+    const prev = s.declineService;
+    patch({ declineService: next });
+    const result = await apiCall(() => api().save_decline_service(next), err);
+    if (result && typeof result.error === "string" && result.error) {
+      patch({ declineService: prev });
+    }
+  };
+
+  const closePreview = () => {
+    if (previewBusy === "execute") return;
+    setPreviewOpen(false);
+    setPreviewBusy(null);
+    setPlan(null);
+    setPreview(null);
+    setPending(null);
+  };
+
   const saveFilters = () => {
-    const bins = s.redirectBinList.filter((p) => s.redirectBins[p]);
+    const bins = redirectCatalog.filter((p) => s.redirectBins[p]);
     return apiCall(
       () =>
         api().save_redirect_filters(
@@ -65,8 +106,40 @@ export function DealsView() {
     );
   };
 
+  const showPreview = async (nextPlan: AgentPlan, nextPending: OpsPending) => {
+    setPending(nextPending);
+    setPlan(nextPlan);
+    setPreview(null);
+    setPreviewOpen(true);
+    setPreviewBusy("preview");
+    try {
+      const prev = (await serverPost("/api/agent/preview", {
+        plan: nextPlan,
+        ui_context: buildUiContext(s),
+      })) as AgentPreview;
+      if (prev?.error) {
+        setPreviewOpen(false);
+        setPlan(null);
+        setPreview(null);
+        setPending(null);
+        err(String(prev.error));
+        return;
+      }
+      setPlan((prev.plan as AgentPlan) || nextPlan);
+      setPreview(prev);
+    } catch (e) {
+      setPreviewOpen(false);
+      setPlan(null);
+      setPreview(null);
+      setPending(null);
+      err(String(e));
+    } finally {
+      setPreviewBusy((cur) => (cur === "preview" ? null : cur));
+    }
+  };
+
   const redirect = async (status: string) => {
-    if (opsBusy) return;
+    if (opsBusy || previewing) return;
     if (!selectedTraders.length) {
       await openDialog({
         title: "Редирект",
@@ -84,42 +157,33 @@ export function DealsView() {
       });
       return;
     }
-
-    const where = selectedLabels.join(", ");
-    const bins = s.redirectBinList.filter((p) => s.redirectBins[p]);
-    const bankNote = bins.length ? ` · ${selectedBankSummary(bins)}` : "";
-    const ok = await openDialog({
-      title: "Передать сделки",
-      body: `${maxN} шт. · ${status === "pending" ? "PENDING" : "NEW"} → ${where}${bankNote}`,
-      danger: true,
-      confirmLabel: "Передать",
-    });
-    if (!ok) return;
-
-    clearDeclineResult();
-    await apiCall(async () => {
-      await saveFilters();
-      return api().start_redirect(
-        selectedTraders,
-        maxN,
-        s.redirMin || null,
-        s.redirMaxAmt || null,
-        status,
-        s.redirSkipBog,
-        s.redirVisaOnly,
-        s.redirMaxRemaining,
-        bins,
-      );
-    }, err);
+    const bins = redirectCatalog.filter((p) => s.redirectBins[p]);
+    await showPreview(
+      {
+        action: "redirect",
+        deal_status: status,
+        max_per_run: maxN,
+        min_amount: optAmount(s.redirMin),
+        max_amount: optAmount(s.redirMaxAmt),
+        skip_bog: s.redirSkipBog,
+        visa_only: s.redirVisaOnly,
+        max_remaining: s.redirMaxRemaining,
+        redirect_bins: bins,
+        trader_ids: selectedTraders,
+        trader_labels: selectedLabels,
+      },
+      { kind: "redirect", status, bins, maxN },
+    );
   };
 
   const declineRun = async () => {
-    if (opsBusy) return;
-    const bins = s.declineBinList.filter((p) => s.declineBins[p]);
-    if (!bins.length) {
+    if (opsBusy || previewing) return;
+    const mcOnly = !!s.declineMastercardOnly;
+    const bins = mcOnly ? [] : s.declineBinList.filter((p) => s.declineBins[p]);
+    if (!mcOnly && !bins.length) {
       await openDialog({
         title: "Отмена",
-        body: "Включи хотя бы один BIN",
+        body: "Включи хотя бы один BIN или «Только MC»",
         alert: true,
       });
       return;
@@ -134,454 +198,307 @@ export function DealsView() {
       return;
     }
     const take = Math.min(50, maxN);
-    const amtBits = [
-      ...(s.declineMinAmt.trim() ? [`от ${s.declineMinAmt.trim()}`] : []),
-      ...(s.declineMaxAmt.trim() ? [`до ${s.declineMaxAmt.trim()}`] : []),
-    ];
-    const amtNote = amtBits.length ? ` · ${amtBits.join(" ")} USDT` : "";
-    const ok = await openDialog({
-      title: "Отменить сделки",
-      body: `${selectedBankSummary(bins)} · ${take} шт.${amtNote} · сначала меньший остаток времени`,
-      danger: true,
-      confirmLabel: "Отменить",
-    });
-    if (!ok) return;
-    clearDeclineResult();
-    await apiCall(
-      () =>
-        api().start_decline(
-          [...bins],
-          false,
-          take,
-          s.declineMinAmt.trim() || null,
-          s.declineMaxAmt.trim() || null,
-        ),
-      err,
+    await showPreview(
+      {
+        action: "decline",
+        max_per_run: take,
+        min_amount: optAmount(s.declineMinAmt),
+        max_amount: optAmount(s.declineMaxAmt),
+        decline_bins: bins,
+        mastercard_only: mcOnly,
+        service: s.declineService,
+      },
+      { kind: "decline", bins, maxN: take, mcOnly },
     );
   };
 
+  const confirmPreview = async () => {
+    if (!pending || running) return;
+    setPreviewBusy("execute");
+    clearDeclineResult();
+    try {
+      if (pending.kind === "redirect") {
+        await apiCall(async () => {
+          await saveFilters();
+          return api().start_redirect(
+            selectedTraders,
+            pending.maxN,
+            s.redirMin || null,
+            s.redirMaxAmt || null,
+            pending.status || "new",
+            s.redirSkipBog,
+            s.redirVisaOnly,
+            s.redirMaxRemaining,
+            pending.bins,
+          );
+        }, err);
+      } else {
+        await apiCall(
+          () =>
+            api().start_decline(
+              [...pending.bins],
+              false,
+              pending.maxN,
+              s.declineMinAmt.trim() || null,
+              s.declineMaxAmt.trim() || null,
+              !!pending.mcOnly,
+              s.declineService,
+            ),
+          err,
+        );
+      }
+      setPreviewOpen(false);
+      setPlan(null);
+      setPreview(null);
+      setPending(null);
+    } finally {
+      setPreviewBusy(null);
+    }
+  };
+
+  const redirHint = bankFilterHint(s.redirectBins, redirectCatalog, extraRedirect);
+  const declineHint = s.declineMastercardOnly
+    ? "только Mastercard"
+    : bankFilterHint(s.declineBins, s.declineBinList);
+
   return (
     <BlurFade delay={0.05} inView>
-      <BentoGrid className="lg:grid-rows-[auto]">
-        <BentoCard className="col-span-3" name="Редирект">
-          <div className="flex flex-col gap-3">
-            <div className="space-y-1.5">
-              <Label>Куда</Label>
-              <div className="grid grid-cols-3 gap-2">
-                {TRADERS.map((t) => (
-                  <label
-                    key={t.id}
-                    className="flex cursor-pointer items-center justify-between gap-2 rounded-xl border border-border/80 bg-muted/25 px-3 py-2.5"
-                  >
-                    <span className="text-sm font-semibold">{t.label}</span>
-                    <Switch
-                      checked={!!s.redirAccounts[t.id]}
+      {previewOpen ? (
+        <div className="relative mx-auto w-full max-w-[42rem]">
+          <BentoGrid className="w-full lg:grid-rows-[auto]">
+            <div className="col-span-3">
+              <CommandPreviewPanel
+                plan={plan}
+                preview={preview}
+                busy={previewBusy}
+                loading={previewBusy === "preview" && !preview}
+                disabled={opsBusy}
+                onConfirm={() => void confirmPreview()}
+                onCancel={closePreview}
+                cancelLabel="Назад"
+              />
+            </div>
+          </BentoGrid>
+        </div>
+      ) : (
+        <Tabs defaultValue="redirect">
+          <TabsList className="w-full sm:w-auto">
+            <TabsTrigger value="redirect" className="flex-1 sm:flex-none">
+              Редирект
+            </TabsTrigger>
+            <TabsTrigger value="decline" className="flex-1 sm:flex-none">
+              Отмена
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="redirect">
+            <BentoCard className="col-span-3" name="Редирект">
+              <div className="flex flex-col gap-3">
+                <FilterChipRow>
+                  {TRADERS.map((t) => (
+                    <FilterChip
+                      key={t.id}
+                      label={t.label}
+                      active={!!s.redirAccounts[t.id]}
                       disabled={opsBusy}
-                      onCheckedChange={(v) =>
+                      onClick={() =>
                         patch({
-                          redirAccounts: { ...s.redirAccounts, [t.id]: v },
+                          redirAccounts: {
+                            ...s.redirAccounts,
+                            [t.id]: !s.redirAccounts[t.id],
+                          },
                         })
                       }
                     />
-                  </label>
-                ))}
-              </div>
-            </div>
+                  ))}
+                </FilterChipRow>
 
-            <div className="grid gap-3 sm:grid-cols-3">
-              <Field label="Сколько">
-                <Input
-                  inputMode="numeric"
-                  min={1}
-                  max={100}
-                  value={s.redirMax}
-                  placeholder="1–100"
-                  disabled={opsBusy}
-                  onChange={(e) =>
-                    patch({
-                      redirMax: e.target.value.replace(/[^\d]/g, "").slice(0, 3),
-                    })
-                  }
-                />
-              </Field>
-              <Field label="От">
-                <Input
-                  value={s.redirMin}
-                  placeholder="USDT"
-                  disabled={opsBusy}
-                  onChange={(e) => patch({ redirMin: e.target.value })}
-                />
-              </Field>
-              <Field label="До">
-                <Input
-                  value={s.redirMaxAmt}
-                  placeholder="USDT"
-                  disabled={opsBusy}
-                  onChange={(e) => patch({ redirMaxAmt: e.target.value })}
-                />
-              </Field>
-            </div>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <Field label="Сделок">
+                    <Input
+                      inputMode="numeric"
+                      min={1}
+                      max={100}
+                      value={s.redirMax}
+                      placeholder="1–100"
+                      disabled={opsBusy}
+                      onChange={(e) =>
+                        patch({
+                          redirMax: e.target.value.replace(/[^\d]/g, "").slice(0, 3),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="От">
+                    <Input
+                      value={s.redirMin}
+                      placeholder="USDT"
+                      disabled={opsBusy}
+                      onChange={(e) => patch({ redirMin: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="До">
+                    <Input
+                      value={s.redirMaxAmt}
+                      placeholder="USDT"
+                      disabled={opsBusy}
+                      onChange={(e) => patch({ redirMaxAmt: e.target.value })}
+                    />
+                  </Field>
+                </div>
 
-            <div className="space-y-1.5">
-              <Label>Банки и BIN</Label>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {BANK_BINS.map((row) => (
-                  <BankBinGroup
-                    key={row.id}
-                    bank={row}
+                <FilterChipRow>
+                  <FilterChip
+                    label="без BoG"
+                    active={s.redirSkipBog}
+                    disabled={opsBusy}
+                    onClick={() => patch({ redirSkipBog: !s.redirSkipBog })}
+                  />
+                  <FilterChip
+                    label="Visa"
+                    active={s.redirVisaOnly}
+                    disabled={opsBusy}
+                    onClick={() => patch({ redirVisaOnly: !s.redirVisaOnly })}
+                  />
+                  <FilterChip
+                    label="< 1 ч"
+                    active={s.redirMaxRemaining}
+                    disabled={opsBusy}
+                    onClick={() => patch({ redirMaxRemaining: !s.redirMaxRemaining })}
+                  />
+                </FilterChipRow>
+
+                <CollapsibleBlock
+                  open={redirBanksOpen}
+                  onOpenChange={setRedirBanksOpen}
+                  title="Банки"
+                  hint={redirHint}
+                  disabled={opsBusy}
+                >
+                  <BinPicker
                     selected={s.redirectBins}
                     disabled={opsBusy}
+                    extra={extraRedirect}
                     onChange={patchRedirectBins}
                   />
-                ))}
-                {extraRedirect.length > 0 && (
-                  <ExtraBinGroup
-                    bins={extraRedirect}
-                    selected={s.redirectBins}
+                </CollapsibleBlock>
+
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  <RippleButton
+                    disabled={opsBusy || previewing}
+                    onClick={() => void redirect("new")}
+                    className="btn-cta h-12 border-primary bg-primary text-base text-primary-foreground hover:brightness-105"
+                  >
+                    NEW
+                  </RippleButton>
+                  <RippleButton
+                    disabled={opsBusy || previewing}
+                    onClick={() => void redirect("pending")}
+                    rippleColor="#e7e2d9"
+                    className="h-12 border-border/50 bg-background/70 text-base text-foreground shadow-sm hover:bg-foreground/[0.06]"
+                  >
+                    PENDING
+                  </RippleButton>
+                </div>
+              </div>
+            </BentoCard>
+          </TabsContent>
+
+          <TabsContent value="decline">
+            <BentoCard className="col-span-3" name="Отмена">
+              <div className="flex flex-col gap-3">
+                <Field label="Сервис">
+                  <Segmented
+                    value={s.declineService}
                     disabled={opsBusy}
-                    onChange={patchRedirectBins}
+                    onChange={(id) => void setDeclineService(id)}
+                    options={[
+                      {
+                        id: "hz" as const,
+                        label: "HZ",
+                        hint: loginHzOk ? " · онлайн" : "",
+                      },
+                      {
+                        id: "eze" as const,
+                        label: "Easy",
+                        hint: loginEzeOk ? " · онлайн" : "",
+                      },
+                    ]}
                   />
-                )}
-              </div>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                <ToggleRow
-                  label="Пропуск BoG"
-                  checked={s.redirSkipBog}
-                  disabled={opsBusy}
-                  onChange={(v) => patch({ redirSkipBog: v })}
-                />
-                <ToggleRow
-                  label="Только Visa"
-                  checked={s.redirVisaOnly}
-                  disabled={opsBusy}
-                  onChange={(v) => patch({ redirVisaOnly: v })}
-                />
-                <ToggleRow
-                  label="Остаток < 1ч"
-                  checked={s.redirMaxRemaining}
-                  disabled={opsBusy}
-                  onChange={(v) => patch({ redirMaxRemaining: v })}
-                />
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Банк вкл — все его BIN. BIN вкл — только эти карты. Все выкл — любые.
-              </p>
-            </div>
+                </Field>
 
-            <div className="flex flex-wrap gap-2 pt-1">
-              <RippleButton
-                disabled={opsBusy}
-                onClick={() => void redirect("new")}
-                className="flex-1 border-primary bg-primary text-primary-foreground hover:brightness-105"
-              >
-                NEW
-              </RippleButton>
-              <RippleButton
-                disabled={opsBusy}
-                onClick={() => void redirect("pending")}
-                rippleColor="#cbd5e1"
-                className="flex-1 border-border bg-secondary text-secondary-foreground hover:bg-slate-200/80"
-              >
-                PENDING
-              </RippleButton>
-            </div>
-          </div>
-        </BentoCard>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <Field label="Сделок">
+                    <Input
+                      inputMode="numeric"
+                      min={1}
+                      max={50}
+                      value={s.declineMax}
+                      placeholder="1–50"
+                      disabled={opsBusy}
+                      onChange={(e) =>
+                        patch({
+                          declineMax: e.target.value.replace(/[^\d]/g, "").slice(0, 2),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="От">
+                    <Input
+                      value={s.declineMinAmt}
+                      placeholder="USDT"
+                      disabled={opsBusy}
+                      onChange={(e) => patch({ declineMinAmt: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="До">
+                    <Input
+                      value={s.declineMaxAmt}
+                      placeholder="USDT"
+                      disabled={opsBusy}
+                      onChange={(e) => patch({ declineMaxAmt: e.target.value })}
+                    />
+                  </Field>
+                </div>
 
-        <BentoCard className="col-span-3" name="Отмена">
-          <div className="flex flex-col gap-3">
-            <div className="space-y-1.5">
-              <Label>Банки и BIN</Label>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {BANK_BINS.map((row) => (
-                  <BankBinGroup
-                    key={row.id}
-                    bank={row}
+                <FilterChipRow>
+                  <FilterChip
+                    label="только MC"
+                    active={s.declineMastercardOnly}
+                    disabled={opsBusy}
+                    onClick={() =>
+                      patch({ declineMastercardOnly: !s.declineMastercardOnly })
+                    }
+                  />
+                </FilterChipRow>
+
+                <CollapsibleBlock
+                  open={declineBanksOpen}
+                  onOpenChange={setDeclineBanksOpen}
+                  title="Банки"
+                  hint={declineHint}
+                  disabled={opsBusy || s.declineMastercardOnly}
+                >
+                  <BinPicker
                     selected={s.declineBins}
-                    disabled={opsBusy}
+                    disabled={opsBusy || s.declineMastercardOnly}
                     onChange={patchDeclineBins}
                   />
-                ))}
+                </CollapsibleBlock>
+
+                <RippleButton
+                  disabled={opsBusy || previewing}
+                  onClick={() => void declineRun()}
+                  className="btn-cta h-12 w-full border-danger bg-danger text-base text-white hover:brightness-95"
+                  rippleColor="#fecaca"
+                >
+                  Отменить
+                </RippleButton>
               </div>
-              <p className="text-xs text-muted-foreground">
-                TBC — по BIN карт, не по имени банка. Банк вкл — все его номера.
-              </p>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <Field label="Сколько">
-                <Input
-                  inputMode="numeric"
-                  min={1}
-                  max={50}
-                  value={s.declineMax}
-                  placeholder="1–50"
-                  disabled={opsBusy}
-                  onChange={(e) =>
-                    patch({
-                      declineMax: e.target.value.replace(/[^\d]/g, "").slice(0, 2),
-                    })
-                  }
-                />
-              </Field>
-              <Field label="От">
-                <Input
-                  value={s.declineMinAmt}
-                  placeholder="USDT"
-                  disabled={opsBusy}
-                  onChange={(e) => patch({ declineMinAmt: e.target.value })}
-                />
-              </Field>
-              <Field label="До">
-                <Input
-                  value={s.declineMaxAmt}
-                  placeholder="USDT"
-                  disabled={opsBusy}
-                  onChange={(e) => patch({ declineMaxAmt: e.target.value })}
-                />
-              </Field>
-            </div>
-            <RippleButton
-              disabled={opsBusy}
-              onClick={() => void declineRun()}
-              className="w-full border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
-              rippleColor="#fecaca"
-            >
-              Отменить
-            </RippleButton>
-          </div>
-        </BentoCard>
-      </BentoGrid>
+            </BentoCard>
+          </TabsContent>
+        </Tabs>
+      )}
     </BlurFade>
-  );
-}
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="space-y-1.5">
-      <Label>{label}</Label>
-      {children}
-    </div>
-  );
-}
-
-function ToggleRow({
-  label,
-  checked,
-  disabled,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  disabled?: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <label className="flex cursor-pointer items-center justify-between gap-2 rounded-xl border border-border/80 bg-muted/25 px-3 py-2.5">
-      <span className="text-sm font-semibold text-foreground">{label}</span>
-      <Switch checked={checked} disabled={disabled} onCheckedChange={onChange} />
-    </label>
-  );
-}
-
-function BinChip({
-  bin,
-  checked,
-  disabled,
-  onToggle,
-}: {
-  bin: string;
-  checked: boolean;
-  disabled: boolean;
-  onToggle: (v: boolean) => void;
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      aria-pressed={checked}
-      onClick={() => onToggle(!checked)}
-      className={cn(
-        "rounded-md px-1.5 py-0.5 font-mono text-[11px] tabular-nums transition",
-        checked
-          ? "bg-slate-900 text-white"
-          : "bg-muted text-slate-700 hover:bg-slate-200",
-        disabled && "cursor-not-allowed opacity-50",
-      )}
-    >
-      {bin}
-    </button>
-  );
-}
-
-function BankBinGroup({
-  bank,
-  selected,
-  disabled,
-  onChange,
-}: {
-  bank: BankBinRow;
-  selected: Record<string, boolean>;
-  disabled: boolean;
-  onChange: (next: Record<string, boolean>) => void;
-}) {
-  const bins = bankAllBins(bank);
-  const onCount = bins.filter((b) => selected[b]).length;
-
-  const setMany = (codes: string[], v: boolean) => {
-    const next = { ...selected };
-    for (const code of codes) next[code] = v;
-    onChange(next);
-  };
-
-  return (
-    <div className="rounded-xl border border-border/80 bg-muted/20 p-2.5">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-semibold">{bank.name}</p>
-          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-            {onCount}/{bins.length} BIN
-          </p>
-        </div>
-        <TriSwitch
-          onCount={onCount}
-          total={bins.length}
-          disabled={disabled}
-          onToggleAll={(v) => setMany(bins, v)}
-        />
-      </div>
-      {bank.visa.length > 0 && (
-        <BinLane
-          label="Visa"
-          bins={bank.visa}
-          selected={selected}
-          disabled={disabled}
-          onToggle={(bin, v) => onChange({ ...selected, [bin]: v })}
-        />
-      )}
-      {bank.mastercard.length > 0 && (
-        <BinLane
-          label="MC"
-          bins={bank.mastercard}
-          selected={selected}
-          disabled={disabled}
-          onToggle={(bin, v) => onChange({ ...selected, [bin]: v })}
-        />
-      )}
-    </div>
-  );
-}
-
-function ExtraBinGroup({
-  bins,
-  selected,
-  disabled,
-  onChange,
-}: {
-  bins: string[];
-  selected: Record<string, boolean>;
-  disabled: boolean;
-  onChange: (next: Record<string, boolean>) => void;
-}) {
-  const onCount = bins.filter((b) => selected[b]).length;
-  return (
-    <div className="rounded-xl border border-border/80 bg-muted/20 p-2.5">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="text-sm font-semibold">Другие</p>
-        <TriSwitch
-          onCount={onCount}
-          total={bins.length}
-          disabled={disabled}
-          onToggleAll={(v) => {
-            const next = { ...selected };
-            for (const code of bins) next[code] = v;
-            onChange(next);
-          }}
-        />
-      </div>
-      <BinLane
-        label="BIN"
-        bins={bins}
-        selected={selected}
-        disabled={disabled}
-        onToggle={(bin, v) => onChange({ ...selected, [bin]: v })}
-      />
-    </div>
-  );
-}
-
-function TriSwitch({
-  onCount,
-  total,
-  disabled,
-  onToggleAll,
-}: {
-  onCount: number;
-  total: number;
-  disabled: boolean;
-  onToggleAll: (allOn: boolean) => void;
-}) {
-  const allOn = total > 0 && onCount === total;
-  const mixed = onCount > 0 && !allOn;
-
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={mixed ? "mixed" : allOn}
-      aria-label={mixed ? "Часть BIN" : allOn ? "Все BIN" : "Нет BIN"}
-      disabled={disabled}
-      onClick={() => onToggleAll(!allOn && !mixed)}
-      className={cn(
-        "relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border shadow-sm transition",
-        allOn && "border-primary bg-primary",
-        mixed && "border-slate-800 bg-slate-800",
-        !allOn && !mixed && "border-slate-300 bg-white",
-        disabled && "cursor-not-allowed opacity-50",
-      )}
-    >
-      <span
-        className={cn(
-          "pointer-events-none flex size-5 items-center justify-center rounded-full bg-white shadow transition-transform",
-          allOn && "translate-x-[22px]",
-          mixed && "translate-x-[11px]",
-          !allOn && !mixed && "translate-x-0.5",
-        )}
-      >
-        {mixed && <span className="h-0.5 w-2.5 rounded-full bg-slate-800" />}
-      </span>
-    </button>
-  );
-}
-
-function BinLane({
-  label,
-  bins,
-  selected,
-  disabled,
-  onToggle,
-}: {
-  label: string;
-  bins: string[];
-  selected: Record<string, boolean>;
-  disabled: boolean;
-  onToggle: (bin: string, v: boolean) => void;
-}) {
-  return (
-    <div className="mt-1.5">
-      <p className="mb-1 text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
-        {label}
-      </p>
-      <div className="flex flex-wrap gap-1">
-        {bins.map((bin) => (
-          <BinChip
-            key={bin}
-            bin={bin}
-            checked={!!selected[bin]}
-            disabled={disabled}
-            onToggle={(v) => onToggle(bin, v)}
-          />
-        ))}
-      </div>
-    </div>
   );
 }

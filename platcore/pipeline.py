@@ -27,7 +27,16 @@ from core.deal_bridge import deal_to_transfer_form, save_pending_deal
 from ui.progress import PipelineProgressTracker
 from ui.job_control import JobStopped, raise_if_stopped
 from core.recovery import deal_summary_from_accepted, offer_recovery_choice
-from core.deals_ui_local import pipeline_ui_bin_prefixes
+from core.deals_ui_local import (
+    pipeline_ui_bin_prefixes,
+    pipeline_ui_skip_bog,
+    pipeline_ui_skip_tbc,
+)
+from core.pipeline_currencies import (
+    fiat_code_from_amount_raw,
+    pipeline_currencies_from_cfg,
+    skip_reason_for_currency,
+)
 from core.validators import (
     PanicError,
     deal_to_dict,
@@ -37,6 +46,8 @@ from core.validators import (
     skip_reason_for_card_brand,
     skip_reason_for_preview,
     skip_reason_for_session_duplicate,
+    skip_reason_for_ignored_banks,
+    ignored_bank_prefixes,
 )
 
 @dataclass
@@ -50,6 +61,7 @@ class AcceptedDeal:
     amount_usdt: float = 0.0
     bank_skipped: bool = False
     ledger: dict | None = None
+    extra_proofs: list | None = None
 
 
 def format_deal_brief(accepted: AcceptedDeal) -> str:
@@ -131,6 +143,7 @@ async def wait_for_min_eligible_deals(
     poll_sec = float(dash_cfg.get("poll_interval_sec", 2.0))
     min_amount, max_amount = _validation_amount_limits(val_cfg)
     allow_visa, allow_mc = _validation_card_brands(val_cfg)
+    currencies = pipeline_currencies_from_cfg(cfg)
     monitor_url = dash_cfg["monitor_url"]
 
     list_page = await ensure_platcore_list_tab(
@@ -143,6 +156,7 @@ async def wait_for_min_eligible_deals(
         max_amount=max_amount,
         allow_visa=allow_visa,
         allow_mastercard=allow_mc,
+        currencies=currencies,
         min_count=min_count,
         poll_sec=poll_sec,
     )
@@ -322,6 +336,8 @@ async def pay_accepted_deal(
     progress: PipelineProgressTracker | None = None,
 ) -> bool:
     """PIN / форма / перевод. True если оплата ушла."""
+    from bank.form import BankDryStop
+
     while True:
         try:
             if progress is not None:
@@ -337,6 +353,21 @@ async def pay_accepted_deal(
             return True
         except JobStopped:
             raise
+        except BankDryStop:
+            warn(
+                f"Сделка #{accepted.index}: тест — сверка ок, оплату не жмём"
+            )
+            from ui.prompts import wait_user_confirm
+
+            await wait_user_confirm(
+                "Тест: форма и сверка EUR/USD ок.\n"
+                "«Подтвердить и перевести» не жмём, SMS не ждём.\n"
+                "Проверь экран на телефоне."
+            )
+            accepted.bank_skipped = True
+            if progress is not None:
+                progress.mark_skipped(accepted.index, "тест: стоп до кода")
+            return False
         except Exception as exc:
             from core.recovery import is_post_payment_error
 
@@ -389,7 +420,10 @@ async def accept_deals_loop(
     fake_accept = bool(stage1.get("fake_accept", False))
     min_amount, max_amount = _validation_amount_limits(val_cfg)
     allow_visa, allow_mc = _validation_card_brands(val_cfg)
+    currencies = pipeline_currencies_from_cfg(cfg)
     bin_prefixes = pipeline_ui_bin_prefixes()
+    skip_tbc = pipeline_ui_skip_tbc()
+    skip_bog = pipeline_ui_skip_bog()
     monitor_url = dash_cfg["monitor_url"]
     timing = parse_human_timing(cfg)
 
@@ -420,15 +454,20 @@ async def accept_deals_loop(
         if max_amount is not None:
             parts.append(f"<= {max_amount:g}")
         info(f"USDT (вход): {' и '.join(parts)}")
+    if currencies:
+        info(f"Валюты: {', '.join(currencies)}")
+    if skip_tbc:
+        info(f"Пропуск TBC: {', '.join(p + '*' for p in ignored_bank_prefixes('tbc'))}")
+    if skip_bog:
+        info(f"Пропуск BOG: {', '.join(p + '*' for p in ignored_bank_prefixes('bog'))}")
     if bin_prefixes:
-        info(f"BIN: только {', '.join(p + '*' for p in bin_prefixes)} (Visa/MC не смотрим)")
-    else:
-        brands = []
-        if allow_visa:
-            brands.append("Visa(4…)")
-        if allow_mc:
-            brands.append("MC(5…)")
-        info(f"Карты: {', '.join(brands) if brands else 'нет (всё skip)'}")
+        info(f"BIN: только {', '.join(p + '*' for p in bin_prefixes)}")
+    brands = []
+    if allow_visa:
+        brands.append("Visa(4…)")
+    if allow_mc:
+        brands.append("MC(5…)")
+    info(f"Карты: {', '.join(brands) if brands else 'нет (всё skip)'}")
     info("Статусы списка: new")
     if fake_accept:
         warn("Accept в dry-run (fake_accept)")
@@ -484,26 +523,49 @@ async def accept_deals_loop(
                 seen.add(preview.fingerprint)
                 continue
 
+            skip_bank = skip_reason_for_ignored_banks(
+                preview.account_raw, skip_tbc=skip_tbc, skip_bog=skip_bog
+            )
+            if skip_bank:
+                info(
+                    f"Пропуск (банк): {preview.account_raw or '—'} — {skip_bank}"
+                )
+                seen.add(preview.fingerprint)
+                continue
+
+            skip_cur = skip_reason_for_currency(
+                fiat_code_from_amount_raw(preview.amount_raw),
+                currencies,
+            )
+            if skip_cur:
+                info(
+                    f"Пропуск (фильтр валюты): {preview.amount_raw or '—'} — {skip_cur}"
+                )
+                seen.add(preview.fingerprint)
+                continue
+
             if bin_prefixes:
-                skip_bin = skip_reason_for_card_bin(preview.account_raw, bin_prefixes)
+                skip_bin = skip_reason_for_card_bin(
+                    preview.account_raw, bin_prefixes
+                )
                 if skip_bin:
                     info(
-                        f"Пропуск (фильтр BIN): {preview.account_raw or '—'} — {skip_bin}"
+                        f"Пропуск (BIN): {preview.account_raw or '—'} — {skip_bin}"
                     )
                     seen.add(preview.fingerprint)
                     continue
-            else:
-                skip_card = skip_reason_for_card_brand(
-                    preview.account_raw,
-                    allow_visa=allow_visa,
-                    allow_mastercard=allow_mc,
+
+            skip_card = skip_reason_for_card_brand(
+                preview.account_raw,
+                allow_visa=allow_visa,
+                allow_mastercard=allow_mc,
+            )
+            if skip_card:
+                info(
+                    f"Пропуск (фильтр карты): {preview.account_raw or '—'} — {skip_card}"
                 )
-                if skip_card:
-                    info(
-                        f"Пропуск (фильтр карты): {preview.account_raw or '—'} — {skip_card}"
-                    )
-                    seen.add(preview.fingerprint)
-                    continue
+                seen.add(preview.fingerprint)
+                continue
 
             skip_dup = skip_reason_for_session_duplicate(
                 preview.account_raw,

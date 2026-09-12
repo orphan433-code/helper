@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import unquote_plus
 
+from core.bank_bins import bins_for
 from core.models import RowPreview, TzkDeal
 
 
@@ -74,7 +76,7 @@ def clean_account(raw: str, *, min_digits: int, max_digits: int) -> str:
 
 
 def optional_clean_holder_name(raw: str) -> str:
-    name = " ".join((raw or "").split())
+    name = _normalize_holder_separators(raw)
     return name if len(name) >= 2 else ""
 
 
@@ -213,14 +215,29 @@ def _sanitize_name_part(word: str) -> str:
     return _collapse_reduplication(broken)
 
 
+def _normalize_holder_separators(raw: str) -> str:
+    """EasySend и другие: ФИО с +, %2B, подчёркиваниями — в пробелы."""
+    text = str(raw or "")
+    text = unquote_plus(text)
+    text = unquote_plus(text)
+    text = text.replace("\xa0", " ")
+    text = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", text)
+    text = text.replace("+", " ")
+    text = re.sub(r"[^\w\s'-]+", " ", text, flags=re.UNICODE)
+    text = re.sub(r"[_0-9]+", " ", text)
+    parts = [p.strip("-'") for p in text.split()]
+    return " ".join(p for p in parts if p)
+
+
 def sanitize_holder_name_for_bank(raw: str) -> str:
     """
     Activ Bank: UPPERCASE + не больше 2 гласных/согласных подряд
     + ломаем палиндромы (ANNA → NA, OTTO → OTT)
     + схлопываем повтор слога (NANA → NA, NONO → NO).
     Hardware-ввод жмёт Shift на заглавные.
+    Плюсы/URL-мусор режем до правил банка.
     """
-    name = " ".join((raw or "").split())
+    name = _normalize_holder_separators(raw)
     if not name:
         return ""
     parts = (_sanitize_name_part(part) for part in name.split())
@@ -310,6 +327,40 @@ def skip_reason_for_card_bin(
     if any(digits.startswith(p) for p in prefixes):
         return None
     return f"BIN не из {', '.join(prefixes)}"
+
+
+def ignored_bank_prefixes(*bank_ids: str) -> tuple[str, ...]:
+    """Все BIN банка из каталога: Visa + MC."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for bank_id in bank_ids:
+        for prefix in bins_for(bank_id, visa=True, mastercard=True):
+            if prefix not in seen:
+                seen.add(prefix)
+                out.append(prefix)
+    return tuple(out)
+
+
+def skip_reason_for_ignored_banks(
+    account_raw: str,
+    *,
+    skip_tbc: bool = False,
+    skip_bog: bool = False,
+) -> str | None:
+    """TBC / BOG целиком не уходят — не принимать, если тумблер вкл."""
+    digits = "".join(ch for ch in (account_raw or "") if ch.isdigit())
+    if not digits:
+        return None
+    banks: list[tuple[str, str]] = []
+    if skip_tbc:
+        banks.append(("tbc", "TBC"))
+    if skip_bog:
+        banks.append(("bog", "BOG"))
+    for bank_id, label in banks:
+        for prefix in ignored_bank_prefixes(bank_id):
+            if digits.startswith(prefix):
+                return f"{label} ({prefix}…)"
+    return None
 
 
 def session_requisites_key(account_raw: str, holder_raw: str) -> str:

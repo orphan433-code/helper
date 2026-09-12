@@ -4,14 +4,16 @@
 from __future__ import annotations
 
 from core.config import load_config, save_config
-from core.deals_ui_local import _patch_section, load_local
 from core.decline_bins import (
     DECLINE_BIN_PREFIXES,
     DECLINE_DEFAULT_ON,
     DECLINE_DEFAULT_PER_RUN,
     clamp_decline_limit,
 )
+from core.decline_hosts import normalize_decline_service
+from core.deals_ui_local import _patch_section, decline_ui_service, load_local, pipeline_ui_service
 from core.pipeline_bins import PIPELINE_BIN_PREFIXES
+from core.pipeline_currencies import gui_pipeline_currencies
 from core.redirect_bins import REDIRECT_BIN_PREFIXES
 from core.paths import ROOT
 
@@ -28,6 +30,7 @@ def apply_gui_settings(
     allow_mastercard: bool | None = None,
     max_empty_list_passes: int | None = None,
     from_pending: bool | None = None,
+    currencies: list[str] | None = None,
 ) -> None:
     cfg = load_config()
     pipe = dict(cfg.get("pipeline") or {})
@@ -41,6 +44,8 @@ def apply_gui_settings(
     # API Accept читает pipeline; api_flow.max_deals — legacy, держим в sync
     api_flow = dict(cfg.get("api_flow") or {})
     api_flow["max_deals"] = pipe["max_deals_per_run"]
+    if currencies is not None:
+        api_flow["currencies"] = gui_pipeline_currencies(currencies)
     cfg["api_flow"] = api_flow
 
     if (
@@ -234,6 +239,56 @@ def decline_amount_settings(_cfg: dict | None = None) -> dict[str, str]:
     }
 
 
+def decline_service_setting(_cfg: dict | None = None) -> str:
+    return decline_ui_service()
+
+
+def pipeline_service_setting(_cfg: dict | None = None) -> str:
+    return pipeline_ui_service()
+
+
+def apply_pipeline_service(service: str = "hz") -> str:
+    key = normalize_decline_service(service)
+    _patch_section("pipeline", service=key)
+    return key
+
+
+def pipeline_dry_stop_setting(_cfg: dict | None = None) -> bool:
+    from core.deals_ui_local import pipeline_ui_dry_stop
+
+    return pipeline_ui_dry_stop()
+
+
+def apply_pipeline_dry_stop(enabled: bool) -> bool:
+    flag = bool(enabled)
+    _patch_section("pipeline", dry_stop_before_pay=flag)
+    return flag
+
+
+def pipeline_skip_tbc_setting(_cfg: dict | None = None) -> bool:
+    from core.deals_ui_local import pipeline_ui_skip_tbc
+
+    return pipeline_ui_skip_tbc()
+
+
+def apply_pipeline_skip_tbc(enabled: bool) -> bool:
+    flag = bool(enabled)
+    _patch_section("pipeline", skip_tbc=flag)
+    return flag
+
+
+def pipeline_skip_bog_setting(_cfg: dict | None = None) -> bool:
+    from core.deals_ui_local import pipeline_ui_skip_bog
+
+    return pipeline_ui_skip_bog()
+
+
+def apply_pipeline_skip_bog(enabled: bool) -> bool:
+    flag = bool(enabled)
+    _patch_section("pipeline", skip_bog=flag)
+    return flag
+
+
 def apply_decline_bin_filters(
     toggles: dict[str, bool] | None = None,
     *,
@@ -244,6 +299,7 @@ def apply_decline_bin_filters(
     max_amount: float | None = None,
     clear_min_amount: bool = False,
     clear_max_amount: bool = False,
+    service: str | None = None,
 ) -> dict[str, bool]:
     """Локально runtime/deals_ui.yaml — не shared config."""
     current = decline_bin_settings()
@@ -272,5 +328,7 @@ def apply_decline_bin_filters(
         fields["max_amount"] = ""
     elif max_amount is not None:
         fields["max_amount"] = _fmt_opt_amount(max_amount)
+    if service is not None:
+        fields["service"] = normalize_decline_service(service)
     _patch_section("decline", **fields)
     return current

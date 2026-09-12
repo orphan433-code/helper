@@ -12,6 +12,7 @@ from core.decline_bins import (
     DECLINE_DEFAULT_ON,
     DECLINE_DEFAULT_PER_RUN,
 )
+from core.decline_hosts import normalize_decline_service
 from core.paths import ROOT
 from core.pipeline_bins import PIPELINE_BIN_PREFIXES
 from core.redirect_bins import REDIRECT_BIN_PREFIXES, normalize_redirect_prefixes
@@ -21,6 +22,10 @@ LOCAL_PATH = ROOT / "runtime" / "deals_ui.yaml"
 _DEFAULT: dict[str, Any] = {
     "pipeline": {
         "bin_toggles": {p: False for p in PIPELINE_BIN_PREFIXES},
+        "service": "hz",
+        "dry_stop_before_pay": False,
+        "skip_tbc": True,
+        "skip_bog": True,
     },
     "redirect": {
         "skip_bog": False,
@@ -36,6 +41,7 @@ _DEFAULT: dict[str, Any] = {
         "max_per_run": str(DECLINE_DEFAULT_PER_RUN),
         "min_amount": "",
         "max_amount": "",
+        "service": "hz",
         "bin_toggles": {p: p in DECLINE_DEFAULT_ON for p in DECLINE_BIN_PREFIXES},
     },
 }
@@ -99,12 +105,42 @@ def _patch_section(section: str, **fields: Any) -> dict[str, Any]:
 
 
 def pipeline_ui_bin_prefixes() -> list[str]:
-    """Включённые BIN основного пайплайна из runtime/deals_ui.yaml."""
+    """Включённые BIN пайплайна — берём только эти (группа «Уходят»)."""
     block = load_local().get("pipeline") or {}
     raw = block.get("bin_toggles")
     if not isinstance(raw, dict):
         raw = {}
     return [p for p in PIPELINE_BIN_PREFIXES if raw.get(p)]
+
+
+def pipeline_ui_service() -> str:
+    """Хост цикла: hz | eze. Default hz — EasySend не трогает HZ."""
+    block = load_local().get("pipeline") or {}
+    return normalize_decline_service(block.get("service"))
+
+
+def pipeline_ui_dry_stop() -> bool:
+    """Тест: форма + сверка, без «Подтвердить и перевести» / SMS."""
+    block = load_local().get("pipeline") or {}
+    return bool(block.get("dry_stop_before_pay"))
+
+
+def pipeline_ui_skip_tbc() -> bool:
+    """Пропуск всего TBC (Visa+MC) на Accept. Default вкл."""
+    block = load_local().get("pipeline") or {}
+    return bool(block.get("skip_tbc", True))
+
+
+def pipeline_ui_skip_bog() -> bool:
+    """Пропуск всего BOG (Visa+MC) на Accept. Default вкл."""
+    block = load_local().get("pipeline") or {}
+    return bool(block.get("skip_bog", True))
+
+
+def decline_ui_service() -> str:
+    """Хост отмены из runtime/deals_ui.yaml: hz | eze."""
+    block = load_local().get("decline") or {}
+    return normalize_decline_service(block.get("service"))
 
 
 def redirect_ui_filters() -> dict[str, bool]:

@@ -19,6 +19,7 @@ export function installWindowBridge() {
   window.appendCancelAlert = (payload) => sync().appendCancelAlert(payload);
   window.clearCancelAlerts = () => sync().clearCancelAlerts();
   window.setConfirmPrompt = (prompt, mode) => sync().setConfirmPrompt(prompt, mode);
+  window.hideConfirmPrompt = () => sync().hideConfirmPrompt();
   window.setRecoveryPrompt = (message, detail, hint, summary, allowRetry) => {
     sync().setRecoveryPrompt(message, detail, hint, summary || {}, !!allowRetry);
   };

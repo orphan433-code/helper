@@ -3,6 +3,8 @@
 # python decline_by_bank_api.py [--list | --execute]
 # python decline_by_bank_api.py --redirect --execute
 
+# Хост отмены переключается в GUI (HZ / EZE), не здесь.
+# Редирект всегда HZ (monitor_url ниже).
 dashboard:
   monitor_url: https://hz.temkitemki.work/pay-out?status=new
 

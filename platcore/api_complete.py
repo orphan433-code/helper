@@ -38,6 +38,9 @@ async def complete_deal_via_api(
     cfg: dict,
     fake_money_sent: bool = False,
     give_fiat: str = "",
+    extra_files: list[Path] | None = None,
+    skip_hz: bool = False,
+    base_url: str | None = None,
     on_progress: Callable[..., None] | None = None,
 ) -> str:
     if not task_id:
@@ -48,10 +51,47 @@ async def complete_deal_via_api(
     if not proof.is_file():
         raise PanicError(f"API complete: нет чека {proof}")
 
-    base_url = api_base_url(cfg)
-    token = await resolve_token(cfg, base_url)
-
+    host = str(base_url or api_base_url(cfg)).rstrip("/")
+    token = await resolve_token(cfg, host)
+    extras = [Path(p) for p in (extra_files or []) if Path(p).is_file()]
     record = dict(ledger or {})
+
+    if skip_hz:
+        parts: list[Path] = []
+        if video is not None:
+            video = Path(video)
+            if not video.is_file():
+                raise PanicError(f"API complete: нет видео {video}")
+            parts.append(video)
+        parts.append(proof)
+        parts.extend(extras)
+        section(f"EZE Money sent {order_id}")
+        info(f"  uuid      : {task_id}")
+        info(
+            f"  I give    : {record.get('give_amt')} "
+            f"{str(record.get('give_cur') or '').upper()}"
+        )
+        info(f"  Activ     : {record.get('tjs')} TJS")
+        for path in parts:
+            info(f"  файл      : {path.name}  ({path.stat().st_size} байт)")
+        if fake_money_sent:
+            ok("fake_money_sent: PUT /upload и /approve не шлём")
+            return "ok"
+        _progress(on_progress, f"PUT /upload ({len(parts)} файл)")
+        uploaded = await asyncio.to_thread(put_upload, host, token, parts)
+        file_ids = [str(item.get("id") or "") for item in uploaded]
+        for item in uploaded:
+            info(
+                f"  id {item.get('id')}  {item.get('type')}  "
+                f"{item.get('fileName') or item.get('url')}"
+            )
+        _progress(on_progress, "PUT /approve")
+        await asyncio.to_thread(put_approve, host, token, task_id, file_ids)
+        ok(f"EZE approve {order_id}: {len(file_ids)} файл(ов)")
+        return "confirmed"
+
+    base_url = host
+
     if not (record.get("tjs") and record.get("give_amt")):
         fetched = await asyncio.to_thread(fetch_hz_ledger, base_url, None, order_id)
         record = dict(fetched or {})

@@ -34,7 +34,7 @@ export function ResultOverlay() {
         </div>
 
         {panel.summary && (
-          <p className="mt-3 font-mono text-xs text-slate-400">{panel.summary}</p>
+          <p className="mt-3 font-mono text-xs text-foreground/45">{panel.summary}</p>
         )}
 
         {!!panel.deals.length && (
@@ -46,21 +46,21 @@ export function ResultOverlay() {
                   key={d.id || d.order_id || i}
                   className={cn(
                     "rounded-xl border px-3 py-2 text-sm",
-                    bad ? "border-amber-200 bg-amber-50/60" : "border-slate-200 bg-slate-50/80",
+                    bad ? "border-amber-200 bg-amber-50/60" : "border-border/40 bg-background/50",
                   )}
                 >
                   <div className="flex justify-between gap-2 font-medium">
                     <span className="truncate">
                       {d.holder || d.order_id || `#${d.index ?? i + 1}`}
                     </span>
-                    <span className="shrink-0 font-mono text-slate-600">
+                    <span className="shrink-0 font-mono text-foreground/70">
                       {d.amount || "—"}
                     </span>
                   </div>
-                  <div className="mt-0.5 text-xs text-slate-500">
+                  <div className="mt-0.5 text-xs text-foreground/55">
                     {[d.card, d.order_id].filter(Boolean).join(" · ") || "—"}
                   </div>
-                  {d.error && <div className="mt-1 text-xs text-red-600">{d.error}</div>}
+                  {d.error && <div className="mt-1 text-xs text-danger">{d.error}</div>}
                 </li>
               );
             })}
@@ -68,7 +68,7 @@ export function ResultOverlay() {
         )}
 
         {panel.errorDetail && (
-          <pre className="mt-3 max-h-32 overflow-auto whitespace-pre-wrap rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+          <pre className="mt-3 max-h-32 overflow-auto whitespace-pre-wrap rounded-xl border border-danger/20 bg-danger-soft p-3 text-xs text-danger">
             {panel.errorDetail}
           </pre>
         )}

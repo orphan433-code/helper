@@ -17,6 +17,7 @@ async def dispute_deal_via_api(
     task_id: str,
     dispute: DisputeConfig,
     deal_index: int | None = None,
+    base_url: str | None = None,
 ) -> None:
     """POST /api/disputes/v2 — reason + text из config, без браузера."""
     deal_uuid = (task_id or "").strip()
@@ -40,7 +41,7 @@ async def dispute_deal_via_api(
         ok(f"{prefix}fake_dispute: POST /api/disputes/v2 не шлём")
         return
 
-    base_url = api_base_url(cfg)
+    base_url = str(base_url or api_base_url(cfg)).rstrip("/")
     token = await resolve_token(cfg, base_url)
     code = await asyncio.to_thread(
         post_dispute,

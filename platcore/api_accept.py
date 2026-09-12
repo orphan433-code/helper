@@ -15,13 +15,29 @@ from playwright.async_api import Page
 from core.deal_bridge import save_pending_deal
 from core.logkit import info, ok, section, warn
 from core.models import RowPreview, TzkDeal
-from core.deals_ui_local import pipeline_ui_bin_prefixes
+from core.deals_ui_local import (
+    pipeline_ui_bin_prefixes,
+    pipeline_ui_dry_stop,
+    pipeline_ui_skip_bog,
+    pipeline_ui_skip_tbc,
+)
+from core.decline_hosts import (
+    DECLINE_SERVICE_EZE,
+    DECLINE_SERVICE_URLS,
+    normalize_decline_service,
+)
+from core.pipeline_currencies import (
+    pipeline_currencies_from_cfg,
+    skip_reason_for_currency,
+)
 from core.validators import (
     PanicError,
     deal_to_dict,
     session_requisites_key,
     skip_reason_for_card_bin,
     skip_reason_for_card_brand,
+    skip_reason_for_ignored_banks,
+    ignored_bank_prefixes,
 )
 from platcore.api_client import (
     api_base_url,
@@ -104,6 +120,15 @@ def _row_sender(row: dict[str, Any]) -> str:
 
 
 def _row_usdt(row: dict[str, Any]) -> float:
+    """USDT для фильтра = то, что в списке UI (out.trader), не merchant amount.
+
+    amount (merchant) выше на service fee — у потолка max_amount жирная
+    сделка выглядела «в лимите», а фильтр резал по грубому amount.
+    """
+    out = row.get("out") if isinstance(row.get("out"), dict) else {}
+    trader = _num(out.get("trader"))
+    if trader > 0:
+        return trader
     return _num(row.get("amount"))
 
 
@@ -117,11 +142,6 @@ def _row_fiat_client(row: dict[str, Any]) -> float:
     return _num(out.get("client"))
 
 
-def _allow_currencies(flow: dict) -> list[str]:
-    raw = flow.get("currencies") or []
-    return [str(x).strip().upper() for x in raw if str(x).strip()]
-
-
 def _skip_row(
     row: dict[str, Any],
     *,
@@ -132,6 +152,8 @@ def _skip_row(
     bin_prefixes: list[str] | None,
     currencies: list[str],
     requisites_in_run: dict[str, int],
+    skip_tbc: bool | None = None,
+    skip_bog: bool | None = None,
 ) -> str | None:
     usdt = _row_usdt(row)
     if min_amount is not None and usdt < min_amount:
@@ -139,19 +161,25 @@ def _skip_row(
     if max_amount is not None and usdt > max_amount:
         return f"USDT {usdt:g} > лимита {max_amount:g}"
     card = _row_card(row)
+    bank_skip = skip_reason_for_ignored_banks(
+        card,
+        skip_tbc=pipeline_ui_skip_tbc() if skip_tbc is None else skip_tbc,
+        skip_bog=pipeline_ui_skip_bog() if skip_bog is None else skip_bog,
+    )
+    if bank_skip:
+        return bank_skip
     if bin_prefixes:
         skip_bin = skip_reason_for_card_bin(card, bin_prefixes)
         if skip_bin:
             return skip_bin
-    else:
-        skip_card = skip_reason_for_card_brand(
-            card, allow_visa=allow_visa, allow_mastercard=allow_mc
-        )
-        if skip_card:
-            return skip_card
-    code = _row_fiat_code(row)
-    if currencies and code not in currencies:
-        return f"валюта {code or '—'} не в фильтре ({', '.join(currencies)})"
+    skip_card = skip_reason_for_card_brand(
+        card, allow_visa=allow_visa, allow_mastercard=allow_mc
+    )
+    if skip_card:
+        return skip_card
+    skip_cur = skip_reason_for_currency(_row_fiat_code(row), currencies)
+    if skip_cur:
+        return skip_cur
     holder = _row_holder(row)
     key = session_requisites_key(card, holder)
     prev = requisites_in_run.get(key)
@@ -191,7 +219,7 @@ def _deal_from_ledger(
     tjs_raw = str(ledger.get("tjs") or "").strip()
     give_raw = str(ledger.get("give_amt") or "").strip()
     give_cur = str(ledger.get("give_cur") or "").strip().lower()
-    if not tjs_raw or not give_raw or give_cur not in ("eur", "usd"):
+    if not tjs_raw or not give_raw or give_cur not in ("eur", "usd", "gel"):
         raise PanicError(
             f"API Accept: ledger без TJS/give (tjs={tjs_raw!r} "
             f"give={give_raw!r} {give_cur!r})"
@@ -369,6 +397,7 @@ async def accept_one_via_api(
     deal_index: int,
     requisites_in_run: dict[str, int],
     fake_accept: bool,
+    host_service: str = "hz",
 ) -> AcceptedDeal:
     deal_id = str(row.get("_id") or "")
     order_id = str(row.get("orderId") or "")
@@ -438,6 +467,8 @@ async def accept_one_via_api(
         or f"{_money2(fiat_amt)} {fiat_cur}".strip(),
         "deal_id": ledger.get("deal_id") or order_id,
     }
+    if normalize_decline_service(host_service) == DECLINE_SERVICE_EZE:
+        ledger_snap["service"] = DECLINE_SERVICE_EZE
     print_bank_preview(
         index=deal_index,
         deal=deal,
@@ -464,6 +495,8 @@ async def accept_one_via_api(
 
 async def accept_deals_loop_api(
     cfg: dict,
+    *,
+    service: str | None = None,
 ) -> tuple[list[AcceptedDeal], dict[str, Page]]:
     dash_cfg = cfg["dashboard"]
     pipe_cfg = cfg.get("pipeline") or {}
@@ -478,18 +511,34 @@ async def accept_deals_loop_api(
     poll_sec = float(dash_cfg.get("poll_interval_sec", 2.0))
     min_amount, max_amount = _validation_amount_limits(val_cfg)
     allow_visa, allow_mc = _validation_card_brands(val_cfg)
-    currencies = _allow_currencies(flow)
 
-    base_url = api_base_url(cfg)
+    host_service = normalize_decline_service(service) if service else "hz"
+    eze = host_service == DECLINE_SERVICE_EZE
+    if eze:
+        currencies = ["GEL"]
+        base_url = DECLINE_SERVICE_URLS[DECLINE_SERVICE_EZE]
+        if pipeline_ui_dry_stop():
+            max_deals = 1
+            info("Тест: одна сделка, стоп до SMS / оплаты")
+    else:
+        currencies = pipeline_currencies_from_cfg(cfg)
+        base_url = api_base_url(cfg)
+
     token = await resolve_token(cfg, base_url)
     info(f"Токен ок, HTTP {base_url}")
 
     bin_prefixes = pipeline_ui_bin_prefixes()
+    skip_tbc = pipeline_ui_skip_tbc()
+    skip_bog = pipeline_ui_skip_bog()
     section(f"API Accept: до {max_deals} сделок, PUT /accept")
     if currencies:
         info(f"Валюты: {', '.join(currencies)}")
+    if skip_tbc:
+        info(f"Пропуск TBC: {', '.join(p + '*' for p in ignored_bank_prefixes('tbc'))}")
+    if skip_bog:
+        info(f"Пропуск BOG: {', '.join(p + '*' for p in ignored_bank_prefixes('bog'))}")
     if bin_prefixes:
-        info(f"BIN: только {', '.join(p + '*' for p in bin_prefixes)} (Visa/MC не смотрим)")
+        info(f"BIN: только {', '.join(p + '*' for p in bin_prefixes)}")
     if fake_accept:
         warn("fake_accept — PUT не уйдёт")
 
@@ -527,6 +576,8 @@ async def accept_deals_loop_api(
                 bin_prefixes=bin_prefixes,
                 currencies=currencies,
                 requisites_in_run=requisites_in_run,
+                skip_tbc=skip_tbc,
+                skip_bog=skip_bog,
             )
             if skip:
                 info(
@@ -550,6 +601,7 @@ async def accept_deals_loop_api(
                     deal_index=next_index,
                     requisites_in_run=requisites_in_run,
                     fake_accept=fake_accept,
+                    host_service=host_service,
                 )
             except JobStopped:
                 raise

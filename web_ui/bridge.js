@@ -56,7 +56,8 @@
         allow_mastercard,
         max_empty_list_passes,
         from_pending,
-        pipeline_bin_prefixes
+        pipeline_bin_prefixes,
+        currencies
       ) =>
         apiPost("/api/save_settings", {
           max_deals,
@@ -69,6 +70,7 @@
           pipeline_bin_prefixes: Array.isArray(pipeline_bin_prefixes)
             ? pipeline_bin_prefixes
             : [],
+          currencies: Array.isArray(currencies) ? currencies : [],
         }),
       save_redirect_filters: (skip_bog, visa_only, max_remaining, redirect_prefixes) =>
         apiPost("/api/save_redirect_filters", {
@@ -87,7 +89,9 @@
         allow_mastercard,
         max_empty_list_passes,
         from_pending,
-        pipeline_bin_prefixes
+        pipeline_bin_prefixes,
+        currencies,
+        service
       ) =>
         apiPost("/api/start_pipeline", {
           max_deals,
@@ -100,8 +104,11 @@
           pipeline_bin_prefixes: Array.isArray(pipeline_bin_prefixes)
             ? pipeline_bin_prefixes
             : [],
+          currencies: Array.isArray(currencies) ? currencies : [],
+          service: service || undefined,
         }),
-      start_login: () => apiPost("/api/start_login"),
+      start_login: (service) =>
+        apiPost("/api/start_login", { service: service || "hz" }),
       start_accept_names: (max_deals, min_amount, max_amount) =>
         apiPost("/api/start_accept_names", {
           max_deals,
@@ -122,14 +129,34 @@
       recovery_exit: () => apiPost("/api/recovery_exit"),
       open_videos_folder: () => apiPost("/api/open_videos_folder"),
       open_screens_folder: () => apiPost("/api/open_screens_folder"),
-      start_decline: (prefixes, tbc, max_per_run, min_amount, max_amount) =>
+      start_decline: (
+        prefixes,
+        tbc,
+        max_per_run,
+        min_amount,
+        max_amount,
+        mastercard_only,
+        service
+      ) =>
         apiPost("/api/start_decline", {
           prefixes: Array.isArray(prefixes) ? prefixes : [],
           tbc: !!tbc,
           max_per_run: max_per_run,
           min_amount: min_amount ?? null,
           max_amount: max_amount ?? null,
+          mastercard_only: !!mastercard_only,
+          service: service || undefined,
         }),
+      save_decline_service: (service) =>
+        apiPost("/api/save_decline_service", { service }),
+      save_pipeline_service: (service) =>
+        apiPost("/api/save_pipeline_service", { service }),
+      save_pipeline_dry_stop: (enabled) =>
+        apiPost("/api/save_pipeline_dry_stop", { enabled: !!enabled }),
+      save_pipeline_skip_tbc: (enabled) =>
+        apiPost("/api/save_pipeline_skip_tbc", { enabled: !!enabled }),
+      save_pipeline_skip_bog: (enabled) =>
+        apiPost("/api/save_pipeline_skip_bog", { enabled: !!enabled }),
       start_redirect: (
         trader_ids,
         max_per_run,

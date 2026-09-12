@@ -1,8 +1,11 @@
 """BIN отмены: каталог банков в коде, едет через git pull. config.yaml не нужен."""
 
 from core.bank_bins import all_catalog_bins, bins_for
+from core.pipeline_bins import PIPELINE_BIN_PREFIXES
 
-DECLINE_BIN_PREFIXES: tuple[str, ...] = all_catalog_bins()
+DECLINE_BIN_PREFIXES: tuple[str, ...] = tuple(
+    p for p in all_catalog_bins() if p not in PIPELINE_BIN_PREFIXES
+)
 DECLINE_DEFAULT_ON: frozenset[str] = frozenset(
     (
         *bins_for("tbc"),

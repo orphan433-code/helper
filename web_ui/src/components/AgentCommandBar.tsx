@@ -8,7 +8,6 @@ import {
   type ReactNode,
 } from "react";
 import {
-  ArrowRight,
   CreditCard,
   History,
   Loader2,
@@ -39,31 +38,12 @@ import {
 import { TRADERS } from "@/lib/types";
 import { useConsole } from "@/store/console";
 import { cn } from "@/lib/utils";
-
-type AgentPlan = Record<string, unknown>;
-
-type PreviewDeal = {
-  order_id?: string;
-  card?: string;
-  holder?: string;
-  amount?: string;
-  bank?: string;
-  remaining?: string;
-};
-
-type AgentPreview = {
-  ok?: boolean;
-  summary?: string;
-  matched?: number;
-  total_pool?: number;
-  deals?: PreviewDeal[];
-  plan?: AgentPlan;
-  error?: string;
-  steps?: { step?: string; detail?: string }[];
-  token_source?: string;
-  debug?: string[];
-  skipped?: Record<string, number>;
-};
+import {
+  buildUiContext,
+  CommandPreviewPanel,
+  type AgentPlan,
+  type AgentPreview,
+} from "@/components/CommandPreview";
 
 type HistoryItem = {
   text: string;
@@ -74,148 +54,8 @@ type HistoryItem = {
   favorite?: boolean;
 };
 
-const BTN_PRIMARY = "border-primary bg-primary text-primary-foreground hover:brightness-105";
-const BTN_SECONDARY =
-  "border-border bg-card text-foreground hover:bg-muted/60";
 const BTN_GHOST =
   "h-8 border-transparent bg-transparent px-2 text-xs text-muted-foreground hover:bg-muted/60";
-
-const RESULT_CARD =
-  "rounded-2xl bg-white shadow-[0_0_0_1px_rgba(0,0,0,.04),0_2px_8px_rgba(15,23,42,.04)]";
-
-function actionStyle(action: "decline" | "redirect") {
-  if (action === "redirect") {
-    return {
-      badge: "bg-blue-50 text-blue-900 ring-1 ring-blue-200/80",
-      label: "text-blue-900",
-      card: "ring-1 ring-blue-200/60",
-    };
-  }
-  return {
-    badge: "bg-rose-50 text-rose-800 ring-1 ring-rose-200/80",
-    label: "text-rose-800",
-    card: "ring-1 ring-rose-200/60",
-  };
-}
-
-function ActionBadge({ action }: { action: "decline" | "redirect" }) {
-  const style = actionStyle(action);
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center rounded-lg px-2.5 py-1 text-sm font-semibold",
-        style.badge,
-      )}
-    >
-      {action === "redirect" ? "Редирект" : "Отмена"}
-    </span>
-  );
-}
-
-function buildUiContext(settings: ReturnType<typeof useConsole.getState>["settings"]) {
-  const redirect_bins = settings.redirectBinList.filter((p) => settings.redirectBins[p]);
-  const decline_bins = settings.declineBinList.filter((p) => settings.declineBins[p]);
-  const redirect_selected_trader_ids = TRADERS.filter((t) => settings.redirAccounts[t.id]).map(
-    (t) => t.traderId,
-  );
-  return {
-    decline_bins,
-    decline_tbc: settings.declineTbc,
-    decline_min_amount: settings.declineMinAmt,
-    decline_max_amount: settings.declineMaxAmt,
-    redirect_bins,
-    redirect_skip_bog: settings.redirSkipBog,
-    redirect_visa_only: settings.redirVisaOnly,
-    redirect_max_remaining: settings.redirMaxRemaining,
-    redirect_min_amount: settings.redirMin,
-    redirect_max_amount: settings.redirMaxAmt,
-    redirect_selected_trader_ids,
-  };
-}
-
-type RequestSummary = {
-  action: "decline" | "redirect";
-  actionLabel: string;
-  highlights: { label: string; value: string }[];
-  extras: string[];
-  traders: string[];
-};
-
-function buildRequestSummary(plan: AgentPlan | null): RequestSummary | null {
-  if (!plan) return null;
-
-  const action = String(plan.action || "decline");
-  const isRedirect = action === "redirect";
-  const highlights: { label: string; value: string }[] = [];
-
-  highlights.push({
-    label: "лимит",
-    value: plan.all_matching ? "все" : `${String(plan.max_per_run ?? 10)} шт`,
-  });
-
-  const bins = isRedirect
-    ? (plan.redirect_bins as string[] | undefined) || []
-    : (plan.decline_bins as string[] | undefined) || [];
-  if (bins.length) highlights.push({ label: "BIN", value: bins.join(", ") });
-
-  const minA = plan.min_amount;
-  const maxA = plan.max_amount;
-  if (minA != null || maxA != null) {
-    const bits: string[] = [];
-    if (minA != null && minA !== "") bits.push(`от ${String(minA)}`);
-    if (maxA != null && maxA !== "") bits.push(`до ${String(maxA)}`);
-    highlights.push({ label: "сумма", value: `${bits.join(" ")} USDT` });
-  }
-
-  const extras: string[] = [];
-  const status = String(plan.deal_status || "new").toUpperCase();
-  if (status !== "NEW") extras.push(`пул ${status}`);
-
-  const traders: string[] = [];
-  if (isRedirect) {
-    const prefs = (plan.redirect_card_prefixes as string[] | undefined) || [];
-    if (prefs.length) extras.push(`карты ${prefs.map((p) => `${p}*`).join(", ")}`);
-    const labels = (plan.trader_labels as string[] | undefined) || [];
-    const ids = (plan.trader_ids as string[] | undefined) || [];
-    if (labels.length) {
-      traders.push(...labels);
-    } else if (ids.length) {
-      const mapped = ids
-        .map((id) => TRADERS.find((t) => t.traderId === id)?.label)
-        .filter((label): label is NonNullable<typeof label> => Boolean(label));
-      if (mapped.length) traders.push(...mapped);
-      else extras.push(`${ids.length} акк.`);
-    }
-  } else {
-    if (plan.decline_tbc) extras.push("TBC");
-    const prefs = (plan.decline_card_prefixes as string[] | undefined) || [];
-    if (prefs.length) extras.push(`карты ${prefs.map((p) => `${p}*`).join(", ")}`);
-  }
-
-  if (plan.max_remaining) {
-    extras.push(`остаток < ${String(plan.max_remaining_hours ?? 1)} ч`);
-  }
-  if (plan.visa_only) extras.push("только Visa");
-  if (plan.mastercard_only) extras.push("только Mastercard");
-  if (plan.skip_bog) extras.push("без BoG");
-
-  return {
-    action: isRedirect ? "redirect" : "decline",
-    actionLabel: isRedirect ? "Редирект" : "Отмена",
-    highlights,
-    extras,
-    traders,
-  };
-}
-
-function dealWord(n: number): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod100 >= 11 && mod100 <= 14) return "сделок";
-  if (mod10 === 1) return "сделка";
-  if (mod10 >= 2 && mod10 <= 4) return "сделки";
-  return "сделок";
-}
 
 function historyAction(item: HistoryItem): "decline" | "redirect" {
   const hay = `${item.text} ${item.summary}`.toLowerCase();
@@ -360,7 +200,7 @@ function AgentHeaderCta({
         rippleColor="#cbd5e1"
         className={BTN_GHOST}
       >
-        Куда
+        Аккаунты
         <span className="font-semibold tabular-nums text-foreground">
           {selectedCount}/{TRADERS.length}
         </span>
@@ -482,7 +322,7 @@ function CommandComposer({
   );
 
   return (
-    <div className="relative rounded-2xl bg-white">
+    <div className="relative rounded-2xl border border-border/40 bg-background/70 backdrop-blur-xl">
       {multiline ? (
         <textarea
           value={value}
@@ -522,7 +362,7 @@ function CommandComposer({
                   className={cn(
                     "max-w-[10.5rem] shrink-0 cursor-pointer truncate rounded-full px-2.5 py-1 text-left text-[11px] font-medium transition-colors duration-150 disabled:opacity-50",
                     action === "decline"
-                      ? "bg-red-50 text-red-800 hover:bg-red-100"
+                      ? "bg-danger-soft text-danger hover:bg-[#e8ddd9]"
                       : "bg-slate-100 text-slate-800 hover:bg-slate-200",
                   )}
                 >
@@ -629,25 +469,6 @@ function AccountToggle({
   );
 }
 
-function CountUp({ value }: { value: number }) {
-  const [n, setN] = useState(0);
-  useEffect(() => {
-    const start = performance.now();
-    const from = 0;
-    const dur = 400;
-    let raf = 0;
-    const tick = (t: number) => {
-      const p = Math.min(1, (t - start) / dur);
-      const eased = 1 - Math.pow(1 - p, 3);
-      setN(Math.round(from + (value - from) * eased));
-      if (p < 1) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [value]);
-  return <>{n}</>;
-}
-
 function BinChip({
   bin,
   disabled,
@@ -699,9 +520,9 @@ function BinDirectoryPanel({
       <DialogContent className="max-w-lg gap-0 p-0">
         <div className="border-b border-border/50 px-5 pb-4 pt-5">
           <DialogHeader className="gap-1.5">
-            <DialogTitle>BIN банков</DialogTitle>
+            <DialogTitle>BIN</DialogTitle>
             <DialogDescription>
-              Клик по банку или BIN — готовый запрос отмены или редиректа в поле.
+              Клик — готовый запрос в поле.
             </DialogDescription>
           </DialogHeader>
           <div className="mt-3 flex gap-1 rounded-xl bg-muted/60 p-1">
@@ -711,7 +532,7 @@ function BinDirectoryPanel({
               className={cn(
                 "flex-1 rounded-lg px-2 py-1.5 text-xs font-semibold transition",
                 action === "decline"
-                  ? "bg-white text-rose-800 shadow-sm"
+                  ? "bg-white text-danger shadow-sm"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
@@ -723,7 +544,7 @@ function BinDirectoryPanel({
               className={cn(
                 "flex-1 rounded-lg px-2 py-1.5 text-xs font-semibold transition",
                 action === "redirect"
-                  ? "bg-white text-blue-900 shadow-sm"
+                  ? "bg-white text-stone-900 shadow-sm"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
@@ -801,9 +622,9 @@ function KudaPanel({
       <DialogContent className="max-w-md gap-0 p-0">
         <div className="border-b border-border/50 px-5 pb-4 pt-5">
           <DialogHeader className="gap-1.5">
-            <DialogTitle>Куда</DialogTitle>
+            <DialogTitle>Аккаунты</DialogTitle>
             <DialogDescription>
-              Аккаунты для редиректа через AI. Выбрано {selectedCount} из {TRADERS.length}.
+              Куда уйдёт редирект. {selectedCount} из {TRADERS.length}.
             </DialogDescription>
           </DialogHeader>
         </div>
@@ -860,7 +681,7 @@ function HistoryPanel({
           <DialogHeader className="gap-1.5">
             <DialogTitle>История</DialogTitle>
             <DialogDescription>
-              Тап — повтор без Gemini. ★ остаётся при очистке.
+              Повтор без Gemini. Звезда не стирается.
             </DialogDescription>
           </DialogHeader>
         </div>
@@ -970,7 +791,7 @@ function IdleView({
         setHistoryOpen,
       )}
     >
-      <div className="col-span-3 rounded-2xl bg-white px-3 py-2 shadow-[0_0_0_1px_rgba(0,0,0,.03),0_2px_4px_rgba(0,0,0,.05),0_12px_24px_rgba(0,0,0,.05)]">
+      <div className="col-span-3 rounded-2xl border border-border/40 bg-background/70 px-3 py-2 shadow-sm backdrop-blur-xl">
         <CommandComposer
           value={text}
           onChange={setText}
@@ -991,7 +812,6 @@ function ResultsView({
   busy,
   plan,
   preview,
-  summary,
   reset,
   runExecute,
   agentConfigured,
@@ -1006,7 +826,6 @@ function ResultsView({
   busy: "parse" | "preview" | "execute" | null;
   plan: AgentPlan | null;
   preview: AgentPreview | null;
-  summary: string;
   reset: () => void;
   runExecute: () => void;
   agentConfigured: boolean;
@@ -1017,20 +836,6 @@ function ResultsView({
   setKudaOpen: (v: boolean) => void;
   setBinOpen: (v: boolean) => void;
 }) {
-  const req = buildRequestSummary(plan);
-  const matched = preview?.matched ?? 0;
-  const poolStatus = plan?.deal_status ? String(plan.deal_status).toUpperCase() : "NEW";
-  const extrasOnly = (req?.extras || []).join(" · ");
-  const amountHighlight = req?.highlights.find((h) => h.label === "сумма");
-  const extrasDisplay = [amountHighlight?.value, extrasOnly].filter(Boolean).join(" · ");
-  const restWithoutAmount = req
-    ? req.highlights
-        .filter((h) => h.label !== "сумма")
-        .map((h) => (h.label === "BIN" ? `BIN ${h.value}` : h.value))
-        .join(" · ")
-    : "";
-  const accent = req ? actionStyle(req.action) : null;
-
   return (
     <AgentShell
       toolbar={agentToolbar(
@@ -1043,134 +848,15 @@ function ResultsView({
         setHistoryOpen,
       )}
     >
-      <div className="col-span-3 grid gap-3 sm:grid-cols-2">
-        <div className={cn(RESULT_CARD, "col-span-3 p-4 sm:col-span-1")}>
-          <h3 className="mb-3 text-sm font-semibold text-neutral-600">
-            {matched > 0 ? "Найдено" : "Не найдено"}
-          </h3>
-          {matched > 0 ? (
-            <div className="flex items-end gap-2">
-              <span className="text-5xl font-bold leading-none tabular-nums text-emerald-700">
-                <CountUp value={matched} />
-              </span>
-              <span className="pb-1.5 text-base font-semibold text-emerald-600">
-                {dealWord(matched)}
-              </span>
-            </div>
-          ) : (
-            <p className="text-sm font-medium text-muted-foreground">Подходящих сделок нет</p>
-          )}
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <span className="text-sm text-muted-foreground">
-              в пуле {preview?.total_pool ?? "—"}
-            </span>
-            <Badge variant="success" className="font-mono text-[10px]">
-              {poolStatus}
-            </Badge>
-          </div>
-        </div>
-
-        <div className={cn(RESULT_CARD, "col-span-3 p-4 sm:col-span-1", accent?.card)}>
-          <h3 className="mb-3 text-sm font-semibold text-neutral-600">Запрос</h3>
-          {req ? (
-            <div className="space-y-2.5">
-              <div className="flex flex-wrap items-center gap-2">
-                <ActionBadge action={req.action} />
-                {restWithoutAmount && (
-                  <span className={cn("text-sm font-medium", accent?.label)}>
-                    {restWithoutAmount}
-                  </span>
-                )}
-              </div>
-              {extrasDisplay && (
-                <p className="text-xs text-muted-foreground">{extrasDisplay}</p>
-              )}
-              {req.traders.length > 0 && (
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-[11px] text-muted-foreground">куда</span>
-                  {req.traders.map((t) => (
-                    <Badge key={t} variant="secondary" className="text-[11px]">
-                      {t}
-                    </Badge>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">—</p>
-          )}
-        </div>
-      </div>
-
-      {preview?.deals && preview.deals.length > 0 && (
-        <div className={cn(RESULT_CARD, "col-span-3 p-4")}>
-          <h3 className="mb-3 text-sm font-semibold text-neutral-600">Сделки</h3>
-          <div className="overflow-hidden rounded-xl border border-slate-100">
-            <div className="grid grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)_minmax(0,0.9fr)_minmax(0,0.75fr)] gap-2 border-b border-slate-100 bg-white px-3 py-2.5 text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
-              <span>order</span>
-              <span>карта</span>
-              <span>сумма</span>
-              <span>остаток</span>
-            </div>
-            <div className="max-h-[min(42vh,320px)] overflow-y-auto bg-white">
-              {preview.deals.map((d, i) => (
-                <div
-                  key={d.order_id || `${d.card}-${d.amount}-${i}`}
-                  className={cn(
-                    "grid grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)_minmax(0,0.9fr)_minmax(0,0.75fr)] gap-2 px-3 py-3 text-sm",
-                    i % 2 === 1 && "bg-slate-50/50",
-                  )}
-                >
-                  <span className="truncate font-mono text-xs">{d.order_id || "—"}</span>
-                  <span className="truncate">{d.card || "—"}</span>
-                  <span className="truncate tabular-nums">{d.amount || "—"}</span>
-                  <span className="truncate tabular-nums">{d.remaining || "—"}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="col-span-3 flex flex-wrap items-center gap-2 pt-1">
-        <RippleButton
-          type="button"
-          disabled={busyOrRunning || !plan || matched === 0}
-          onClick={runExecute}
-          rippleColor="#cbd5e1"
-          className={BTN_PRIMARY}
-        >
-          {busy === "execute" ? (
-            <>
-              <Loader2 className="size-4 animate-spin" />
-              Запуск…
-            </>
-          ) : (
-            <>
-              Подтвердить и запустить
-              <ArrowRight className="size-4" />
-            </>
-          )}
-        </RippleButton>
-        <RippleButton
-          type="button"
-          onClick={reset}
-          rippleColor="#cbd5e1"
-          className={BTN_SECONDARY}
-        >
-          Сброс
-        </RippleButton>
-        <span className="w-full text-xs text-muted-foreground sm:ml-auto sm:w-auto">
-          {matched} {dealWord(matched)}
-          {summary && req && (
-            <>
-              {" · "}
-              <span className={cn("font-semibold", accent?.label)}>
-                {req.action === "redirect" ? "редирект" : "отмена"}
-              </span>
-            </>
-          )}
-        </span>
+      <div className="col-span-3">
+        <CommandPreviewPanel
+          plan={plan}
+          preview={preview}
+          busy={busy}
+          disabled={busyOrRunning}
+          onConfirm={runExecute}
+          onCancel={reset}
+        />
       </div>
     </AgentShell>
   );
@@ -1232,7 +918,7 @@ export function AgentCommandBar() {
 
   const err = (e: string) => {
     appendLog(`[AGENT] ${e}`);
-    void openDialog({ title: "AI команда", body: e, danger: true, alert: true });
+    void openDialog({ title: "Команда", body: e, danger: true, alert: true });
   };
 
   const reset = () => {
@@ -1383,7 +1069,6 @@ export function AgentCommandBar() {
             busy={busy}
             plan={plan}
             preview={preview}
-            summary={summary}
             reset={reset}
             runExecute={() => void runExecute()}
             agentConfigured={agentConfigured}

@@ -18,6 +18,8 @@ from completion.registry import proofs_dir, videos_dir
 from core.logkit import make_event, set_ui_sink
 from core.config import bank_settings, load_config
 from core.decline_bins import DECLINE_BIN_PREFIXES, clamp_decline_limit
+from core.decline_hosts import normalize_decline_service
+from core.host_session import session_status_payload, session_status_snapshot, session_status_stale
 from core.redirect_bins import REDIRECT_BIN_PREFIXES
 from core.redirect_rules import REDIRECT_MAX_REMAINING_HOURS
 from core.ensure_configs import ensure_local_configs
@@ -39,10 +41,16 @@ from ui.progress import (
     set_pipeline_progress_handler,
 )
 from core.pipeline_bins import PIPELINE_BIN_PREFIXES
+from core.pipeline_currencies import (
+    PIPELINE_CURRENCIES,
+    gui_pipeline_currencies,
+    pipeline_currencies_from_cfg,
+)
 from core.accept_names import ACCEPT_NAMES_DEFAULT_MAX
 from ui.settings import (
     apply_gui_settings,
     apply_pipeline_bin_filters,
+    apply_pipeline_service,
     apply_redirect_filters,
     apply_redirect_bin_filters,
     apply_decline_bin_filters,
@@ -52,6 +60,14 @@ from ui.settings import (
     decline_max_per_run,
     pipeline_bin_settings,
     decline_amount_settings,
+    decline_service_setting,
+    pipeline_service_setting,
+    pipeline_dry_stop_setting,
+    apply_pipeline_dry_stop,
+    pipeline_skip_tbc_setting,
+    apply_pipeline_skip_tbc,
+    pipeline_skip_bog_setting,
+    apply_pipeline_skip_bog,
     redirect_amount_settings,
     apply_redirect_amounts,
     redirect_filter_settings,
@@ -67,6 +83,26 @@ WEB_UI_LEGACY = ROOT / "web_ui" / "index.legacy.html"
 # Decline внутри репо (раньше лежал рядом: ../platcore-decline)
 DECLINE_DIR = ROOT / "platcore-decline"
 DECLINE_SCRIPT = DECLINE_DIR / "decline_by_bank_api.py"
+
+
+def decline_crash_detail(err_tail: list[str]) -> str:
+    """Хвост stderr без traceback-рамки. Таймаут — одна фраза."""
+    useful: list[str] = []
+    for line in err_tail:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        low = stripped.lower()
+        if stripped.startswith("Traceback") or stripped.startswith("File "):
+            continue
+        if "timed out" in low or low.startswith("timeouterror"):
+            return " — сервер не ответил (таймаут)"
+        useful.append(stripped)
+    if not useful:
+        return ""
+    return " — " + " | ".join(useful[-2:])
+
+
 # setup.sh кладёт venv в TJSBOT/.venv; старый layout — соседний parent/.venv
 _PYTHON_CANDIDATES = (
     ROOT / ".venv" / "bin" / "python",
@@ -75,6 +111,13 @@ _PYTHON_CANDIDATES = (
     ROOT.parent / ".venv" / "bin" / "python",
 )
 PYTHON = next((p for p in _PYTHON_CANDIDATES if p.is_file()), _PYTHON_CANDIDATES[0])
+
+
+def _parse_currencies(raw: object) -> list[str] | None:
+    """None = не трогать конфиг. [] = все валюты."""
+    if raw is None:
+        return None
+    return gui_pipeline_currencies(raw)
 
 
 def _adb_status_text() -> tuple[str, bool]:
@@ -89,12 +132,23 @@ def _adb_status_text() -> tuple[str, bool]:
         )
 
         invalidate_serial_cache()
-        serial = require_device()
+        try:
+            serial = require_device()
+        except RuntimeError as exc:
+            return str(exc), False
         w, h = get_display_size()
         label = serial or pick_serial() or "device"
         kind = "wifi" if (serial and (":" in serial or "_adb-tls" in serial)) else "usb"
         return f"{label} ({kind}) — {w}×{h} [{adb_bin()}]", True
     except Exception as exc:
+        try:
+            from device.adb import try_auto_connect_wifi
+
+            _, hint = try_auto_connect_wifi()
+            if hint:
+                return f"не подключён ({exc}) | {hint}", False
+        except Exception:
+            pass
         return f"не подключён ({exc})", False
 
 
@@ -135,10 +189,15 @@ class TzkApi:
         self._job_mode: JobMode = ""
         self._pending_confirm: threading.Event | None = None
         self._confirm_kind: str = "receipts"
+        self._confirm_ui_mode: str = ""
+        self._confirm_prompt: str = ""
         self._pending_recovery: threading.Event | None = None
         self._recovery_choice: str = "exit"
         self._subprocess: subprocess.Popen[str] | None = None
         self._status = "Готов к работе"
+        self._login_service = "hz"
+        self._login_early_confirm = False
+        self._session_refreshing = False
 
     def set_window(self, window: Any) -> None:
         self._window = window
@@ -304,13 +363,15 @@ class TzkApi:
         pipe_bins = pipeline_bin_settings()
         adb_text, adb_ok = _adb_status_text()
         serial = bank_settings(cfg).get("adb_serial") or ""
-        return {
+        state = {
             "max_deals": int(pipe.get("max_deals_per_run", 5)),
             "max_empty_list_passes": int(pipe.get("max_empty_list_passes", 2)),
             "min_amount": str(val.get("min_amount", "") or ""),
             "max_amount": str(val.get("max_amount", "") or ""),
             "allow_visa": bool(val.get("allow_visa", True)),
             "allow_mastercard": bool(val.get("allow_mastercard", False)),
+            "currency_list": list(PIPELINE_CURRENCIES),
+            "currencies": gui_pipeline_currencies(pipeline_currencies_from_cfg(cfg)),
             "from_pending": bool(pipe.get("from_pending", False)),
             "pipeline_bin_list": list(PIPELINE_BIN_PREFIXES),
             "pipeline_bin_toggles": pipe_bins,
@@ -328,6 +389,13 @@ class TzkApi:
             "decline_max_per_run": decline_max_per_run(),
             "decline_min_amount": amounts.get("min_amount", ""),
             "decline_max_amount": amounts.get("max_amount", ""),
+            "decline_service": decline_service_setting(),
+            "pipeline_service": pipeline_service_setting(),
+            "dry_stop_before_pay": pipeline_dry_stop_setting(),
+            "skip_tbc": pipeline_skip_tbc_setting(),
+            "skip_bog": pipeline_skip_bog_setting(),
+            **session_status_snapshot(),
+            "login_target": getattr(self, "_login_service", "hz"),
             "screens_dir": str(proofs_dir(cfg)),
             "videos_dir": str(videos_dir(cfg)),
             "video_min_usdt": float(
@@ -339,6 +407,18 @@ class TzkApi:
             "status": self._status,
             "running": self._running,
             "job_mode": self._job_mode,
+            "confirm_mode": self._confirm_ui_mode
+            if (
+                self._pending_confirm is not None
+                and not self._pending_confirm.is_set()
+            )
+            else "",
+            "confirm_prompt": self._confirm_prompt
+            if (
+                self._pending_confirm is not None
+                and not self._pending_confirm.is_set()
+            )
+            else "",
             "confirm_enabled": self._pending_confirm is not None
             and not self._pending_confirm.is_set(),
             "recovery_enabled": self._pending_recovery is not None
@@ -347,6 +427,37 @@ class TzkApi:
             "agent_configured": self._agent_configured(),
             "agent_model": self._agent_model(),
         }
+        self._kick_session_refresh()
+        return state
+
+    def _push_session_status(self, *, force: bool = False) -> None:
+        try:
+            payload = (
+                session_status_payload(force=True)
+                if force
+                else session_status_snapshot()
+            )
+            self._notify_ui(f"applyState({json.dumps(payload)});")
+        except Exception:
+            pass
+
+    def _kick_session_refresh(self) -> None:
+        if not session_status_stale():
+            return
+        if self._session_refreshing:
+            return
+        self._session_refreshing = True
+
+        def _run() -> None:
+            try:
+                payload = session_status_payload(force=True)
+                self._notify_ui(f"applyState({json.dumps(payload)});")
+            except Exception:
+                pass
+            finally:
+                self._session_refreshing = False
+
+        threading.Thread(target=_run, daemon=True, name="session-status").start()
 
     def poll_logs(self) -> list[dict[str, Any]]:
         """Структурированные события журнала (для interactive logs table)."""
@@ -371,6 +482,7 @@ class TzkApi:
         max_empty_list_passes: int | None = None,
         from_pending: bool = False,
         pipeline_bin_prefixes: list[str] | str | None = None,
+        currencies: list[str] | str | None = None,
     ) -> dict[str, Any]:
         try:
             min_amt = self._parse_amount(min_amount)
@@ -388,6 +500,7 @@ class TzkApi:
                 allow_mastercard=bool(allow_mastercard),
                 max_empty_list_passes=empty_passes,
                 from_pending=bool(from_pending),
+                currencies=_parse_currencies(currencies),
             )
             if pipeline_bin_prefixes is not None:
                 if isinstance(pipeline_bin_prefixes, str):
@@ -420,7 +533,14 @@ class TzkApi:
                 msg += f", сумма {min_amt or '—'}–{max_amt or '—'}"
             msg += f", карты: {', '.join(brands) if brands else 'нет'}"
             if active_bins:
-                msg += f", BIN: {', '.join(active_bins)}"
+                msg += f", только BIN: {', '.join(active_bins)}"
+            saved_cur = gui_pipeline_currencies(
+                pipeline_currencies_from_cfg(load_config())
+            )
+            if saved_cur:
+                msg += f", валюты: {', '.join(saved_cur)}"
+            else:
+                msg += ", валюты: все"
             return self._ok(message=msg + "\n")
         except (ValueError, TypeError) as exc:
             return self._err(f"Некорректное значение: {exc}")
@@ -467,13 +587,68 @@ class TzkApi:
         except Exception as exc:
             return self._err(f"Не удалось сохранить фильтры: {exc}")
 
-    def start_login(self) -> dict[str, Any]:
+    def save_decline_service(self, service: str = "hz") -> dict[str, Any]:
+        """Хост отмены: hz | eze. Локально runtime/deals_ui.yaml."""
+        try:
+            ensure_local_configs()
+            key = normalize_decline_service(service)
+            apply_decline_bin_filters(service=key)
+            return self._ok(message=f"[OK] Отмена: {key.upper()}\n")
+        except Exception as exc:
+            return self._err(f"Не удалось сохранить сервис отмены: {exc}")
+
+    def save_pipeline_service(self, service: str = "hz") -> dict[str, Any]:
+        """Хост цикла: hz | eze. Default hz."""
+        try:
+            ensure_local_configs()
+            key = apply_pipeline_service(service)
+            return self._ok(message=f"[OK] Цикл: {key.upper()}\n")
+        except Exception as exc:
+            return self._err(f"Не удалось сохранить сервис цикла: {exc}")
+
+    def save_pipeline_dry_stop(self, enabled: bool = False) -> dict[str, Any]:
+        """Тест: стоп после сверки EUR/USD, без оплаты."""
+        try:
+            ensure_local_configs()
+            flag = apply_pipeline_dry_stop(bool(enabled))
+            label = "вкл, стоп до кода" if flag else "выкл"
+            return self._ok(message=f"[OK] Тест банка: {label}\n")
+        except Exception as exc:
+            return self._err(f"Не удалось сохранить тест банка: {exc}")
+
+    def save_pipeline_skip_tbc(self, enabled: bool = True) -> dict[str, Any]:
+        """Accept: не брать TBC (Visa+MC)."""
+        try:
+            ensure_local_configs()
+            flag = apply_pipeline_skip_tbc(bool(enabled))
+            label = "вкл" if flag else "выкл"
+            return self._ok(message=f"[OK] Пропуск TBC: {label}\n")
+        except Exception as exc:
+            return self._err(f"Не удалось сохранить пропуск TBC: {exc}")
+
+    def save_pipeline_skip_bog(self, enabled: bool = True) -> dict[str, Any]:
+        """Accept: не брать BOG (Visa+MC)."""
+        try:
+            ensure_local_configs()
+            flag = apply_pipeline_skip_bog(bool(enabled))
+            label = "вкл" if flag else "выкл"
+            return self._ok(message=f"[OK] Пропуск BOG: {label}\n")
+        except Exception as exc:
+            return self._err(f"Не удалось сохранить пропуск BOG: {exc}")
+
+    def start_login(self, service: str = "hz") -> dict[str, Any]:
         if self._running:
             return self._err("Уже выполняется")
-        self._status = "Открываю окно входа…"
+        from core.decline_hosts import DECLINE_SERVICE_EZE, normalize_decline_service
+
+        key = normalize_decline_service(service)
+        host = "EasySend" if key == DECLINE_SERVICE_EZE else "HZ"
+        self._login_service = key
+        self._login_early_confirm = False
+        self._status = f"Открываю вход {host}…"
         self._set_running(True, "login")
-        self._push_log("Вход в PlatCore", service="platcore", status="section")
-        self._start_worker(run_login, "login")
+        self._push_log(f"Вход {host}", service="platcore", status="section")
+        self._start_worker(lambda: run_login(key), "login")
         return self._ok()
 
     def start_pipeline(
@@ -486,6 +661,8 @@ class TzkApi:
         max_empty_list_passes: int | None = None,
         from_pending: bool | None = None,
         pipeline_bin_prefixes: list[str] | str | None = None,
+        currencies: list[str] | str | None = None,
+        service: str | None = None,
     ) -> dict[str, Any]:
         if self._running:
             return self._err("Уже выполняется")
@@ -511,6 +688,7 @@ class TzkApi:
                 allow_mastercard=bool(allow_mastercard),
                 max_empty_list_passes=empty_passes,
                 from_pending=pending,
+                currencies=_parse_currencies(currencies),
             )
             if pipeline_bin_prefixes is not None:
                 if isinstance(pipeline_bin_prefixes, str):
@@ -529,19 +707,28 @@ class TzkApi:
                 )
         except (ValueError, TypeError) as exc:
             return self._err(f"Некорректное значение: {exc}")
+        host = apply_pipeline_service(service or pipeline_service_setting())
         active_bins = [
             p for p in PIPELINE_BIN_PREFIXES if pipeline_bin_settings().get(p)
         ]
-        mode = "pending→Approve→банк→чеки" if pending else "Accept→банк→чеки"
+        if host == "eze":
+            mode = "EZE OCR Activ→Accept→банк"
+        else:
+            mode = "pending→Approve→банк→чеки" if pending else "Accept→банк→чеки"
         self._status = "Обрабатываю сделки…"
         self._set_running(True, "pipeline")
         bin_note = f", BIN {', '.join(active_bins)}" if active_bins else ""
+        saved_cur = gui_pipeline_currencies(
+            pipeline_currencies_from_cfg(load_config())
+        )
+        cur_note = f", валюты {', '.join(saved_cur)}" if saved_cur else ""
+        host_note = f", {host.upper()}"
         self._push_log(
-            f"Запуск цикла ({mode}, до {deals} сделок, стоп после {empty_passes} пустых кругов{bin_note})",
+            f"Запуск цикла ({mode}{host_note}, до {deals} сделок, стоп после {empty_passes} пустых кругов{bin_note}{cur_note})",
             service="pipeline",
             status="section",
         )
-        self._start_worker(run_pipeline, "pipeline")
+        self._start_worker(lambda: run_pipeline(service=host), "pipeline")
         return self._ok()
 
     def start_accept_names(
@@ -606,15 +793,24 @@ class TzkApi:
         max_per_run: int | float | str | None = None,
         min_amount: int | float | str | None = None,
         max_amount: int | float | str | None = None,
+        mastercard_only: bool = False,
         bank: str | list[str] | None = None,
         max_remaining: bool = False,
         max_remaining_hours: float | None = None,
         card_prefixes: list[str] | str | None = None,
         all_cards: bool = False,
         visa_only: bool = False,
-        mastercard_only: bool = False,
+        service: str | None = None,
     ) -> dict[str, Any]:
-        # pywebview: start_decline(["558328", …]) / start_decline(list, tbc)
+        # pywebview: start_decline(["558328", …]) / start_decline(list, tbc, n, min, max, mc)
+        # 6-й позиционный раньше был bank="tbc"|"bog"
+        if isinstance(mastercard_only, str) and mastercard_only.lower() in (
+            "tbc",
+            "bog",
+        ):
+            bank = mastercard_only
+            mastercard_only = False
+        mastercard_only = bool(mastercard_only)
         if isinstance(prefixes, bool) and bank is None:
             tbc = bool(prefixes)
             prefixes = None
@@ -649,12 +845,16 @@ class TzkApi:
         from agent.bin_resolve import merge_decline_bins_and_prefixes
 
         _bins2, card_prefs = merge_decline_bins_and_prefixes([], raw_card)
+        host = normalize_decline_service(
+            service if service not in (None, "") else decline_service_setting()
+        )
         # Нет BIN/TBC/префикса → отмена по сумме/лимиту/Visa/MC (все подходящие карты)
         if not bins and not include_tbc and not card_prefs:
             if bank and not (all_cards or visa_only or mastercard_only):
                 return self._start_decline_or_redirect(
                     redirect=False,
                     decline_bank=str(bank or "tbc"),
+                    decline_service=host,
                 )
             all_cards = True
         if visa_only and mastercard_only:
@@ -688,6 +888,7 @@ class TzkApi:
                 max_amount=max_a,
                 clear_min_amount=min_a is None,
                 clear_max_amount=max_a is None,
+                service=host,
             )
         except Exception:
             pass
@@ -704,6 +905,7 @@ class TzkApi:
             all_cards=bool(all_cards) or bool(visa_only) or bool(mastercard_only),
             visa_only=bool(visa_only),
             mastercard_only=bool(mastercard_only),
+            decline_service=host,
         )
 
     def start_redirect(
@@ -1020,10 +1222,9 @@ class TzkApi:
                 status="section",
             )
             return {"ok": True, "debug": debug, **payload}
-        except SystemExit:
-            return self._err(
-                "Нет токена PlatCore. Залогинься через «Вход» или задай PLATCORE_TOKEN."
-            )
+        except SystemExit as exc:
+            msg = exc.code if isinstance(exc.code, str) else str(exc)
+            return self._err(msg or "Нет сессии. Жми «Вход» в UI.")
         except Exception as exc:
             traceback.print_exc()
             from core.validators import PanicError
@@ -1089,6 +1290,7 @@ class TzkApi:
         redirect_card_prefixes: list[str] | None = None,
         max_remaining_hours: float | None = None,
         all_cards: bool = False,
+        decline_service: str | None = None,
     ) -> dict[str, Any]:
         if self._running:
             return self._err("Уже выполняется")
@@ -1149,6 +1351,9 @@ class TzkApi:
                 status="section",
             )
         else:
+            host = normalize_decline_service(
+                decline_service if decline_service not in (None, "") else decline_service_setting()
+            )
             card_prefs = [
                 "".join(ch for ch in str(p) if ch.isdigit())
                 for p in (decline_card_prefixes or [])
@@ -1173,7 +1378,7 @@ class TzkApi:
                 limit_word = "все подходящие" if n == 0 else f"первые {n}"
                 self._status = f"Отменяю сделки ({bank_word}, {limit_word})…"
                 self._push_log(
-                    f"Отмена: {bank_word} · сорт по remaining · {limit_word}{amt_note}",
+                    f"Отмена {host.upper()}: {bank_word} · сорт по remaining · {limit_word}{amt_note}",
                     service="decline",
                     status="section",
                 )
@@ -1199,7 +1404,7 @@ class TzkApi:
                 limit_word = "все подходящие" if n == 0 else f"первые {n}"
                 self._status = f"Отменяю сделки ({scheme}, {limit_word})…"
                 self._push_log(
-                    f"Отмена: {scheme} · сорт по remaining · {limit_word}{amt_note}",
+                    f"Отмена {host.upper()}: {scheme} · сорт по remaining · {limit_word}{amt_note}",
                     service="decline",
                     status="section",
                 )
@@ -1211,7 +1416,7 @@ class TzkApi:
                 )
                 self._status = f"Отменяю сделки ({bank_word})…"
                 self._push_log(
-                    f"Отмена по банку: {bank_word} ({bank_key})",
+                    f"Отмена {host.upper()} по банку: {bank_word} ({bank_key})",
                     service="decline",
                     status="section",
                 )
@@ -1245,6 +1450,7 @@ class TzkApi:
                     if str(p).strip()
                 ],
                 "all_cards": bool(all_cards),
+                "decline_service": None if redirect else host,
             },
             name=f"tzk-{mode}",
             daemon=True,
@@ -1265,6 +1471,9 @@ class TzkApi:
         if self._pending_confirm is not None:
             self._pending_confirm.set()
             self._pending_confirm = None
+            self._confirm_ui_mode = ""
+            self._confirm_prompt = ""
+            self._notify_ui("hideConfirmPrompt();")
         if self._pending_recovery is not None:
             self._recovery_choice = "exit"
             self._pending_recovery.set()
@@ -1307,6 +1516,13 @@ class TzkApi:
             self._confirm_kind = str(kind or "receipts").strip().lower() or "receipts"
             self._pending_confirm.set()
             self._pending_confirm = None
+            self._confirm_ui_mode = ""
+            self._confirm_prompt = ""
+            self._notify_ui("hideConfirmPrompt();")
+            return self._ok()
+        if self._running and self._job_mode == "login":
+            self._login_early_confirm = True
+            self._confirm_kind = "login"
         return self._ok()
 
     def cancel_completion_deal(self, order_id: str) -> dict[str, Any]:
@@ -1469,21 +1685,35 @@ class TzkApi:
         return float(text)
 
     async def _gui_confirm(self, prompt: str) -> str:
+        if self._job_mode == "login" and self._login_early_confirm:
+            self._login_early_confirm = False
+            self._confirm_kind = "login"
+            return "login"
         done = threading.Event()
         self._confirm_kind = "receipts"
         self._pending_confirm = done
+        text = (prompt or "").strip()
         mode = self._job_mode
-        short = prompt.replace("\n", " ").strip()
+        if text.startswith("EZE курс"):
+            mode = "eze_rates"
+        elif text.startswith("Тест:"):
+            mode = "dry_stop"
+        self._confirm_ui_mode = mode
+        self._confirm_prompt = text
+        short = text.replace("\n", " ").strip()
         self._status = short
-        safe_prompt = json.dumps(short)
+        safe_prompt = json.dumps(text)
         safe_mode = json.dumps(mode)
         self._notify_ui(f"setConfirmPrompt({safe_prompt}, {safe_mode});")
-        if mode == "pipeline" and is_bank_phase():
+        if self._job_mode == "pipeline" and is_bank_phase():
             enter_foreground()
         await asyncio.to_thread(done.wait)
         self._pending_confirm = None
+        self._confirm_ui_mode = ""
+        self._confirm_prompt = ""
+        self._notify_ui("hideConfirmPrompt();")
         kind = self._confirm_kind or "receipts"
-        if mode == "pipeline" and is_bank_phase():
+        if self._job_mode == "pipeline" and is_bank_phase():
             enter_background()
         return kind
 
@@ -1611,6 +1841,9 @@ class TzkApi:
                 loop.close()
             except Exception:
                 pass
+            if mode == "login":
+                self._push_session_status(force=False)
+                self._kick_session_refresh()
             self._set_running(False)
             self._notify_ui("hideRecoveryPrompt();")
 
@@ -1699,6 +1932,7 @@ class TzkApi:
         redirect_card_prefixes: list[str] | None = None,
         max_remaining_hours: float | None = None,
         all_cards: bool = False,
+        decline_service: str | None = None,
     ) -> None:
         begin_job()
         saw_ui_result = False
@@ -1796,6 +2030,11 @@ class TzkApi:
                 if bank not in ("tbc", "bog"):
                     bank = "tbc"
                 cmd.extend(["--bank", bank])
+        if not redirect:
+            host = normalize_decline_service(
+                decline_service if decline_service not in (None, "") else decline_service_setting()
+            )
+            cmd.extend(["--service", host])
         cmd.append("--execute")
         try:
             self._notify_ui("clearDeclineResult();")
@@ -1869,17 +2108,15 @@ class TzkApi:
                         service=svc,
                     )
             else:
-                detail = ""
-                if err_tail:
-                    detail = " — " + " | ".join(err_tail[-3:])
-                msg = f"{done_word}: ошибка (код {code}){detail}"
-                self._push_log(
-                    msg,
-                    level="error",
-                    service=svc,
-                    status="error",
-                )
                 if not saw_ui_result:
+                    detail = decline_crash_detail(err_tail)
+                    msg = f"{done_word}: ошибка (код {code}){detail}"
+                    self._push_log(
+                        msg,
+                        level="error",
+                        service=svc,
+                        status="error",
+                    )
                     self._decline_result(
                         {
                             "phase": "done",
@@ -1937,7 +2174,7 @@ def main() -> None:
         width=960,
         height=900,
         min_size=(720, 700),
-        background_color="#f0fdfa",
+        background_color="#e7f2f8",
     )
     api.set_window(window)
     webview.start()

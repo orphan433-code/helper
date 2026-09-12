@@ -20,6 +20,10 @@ class BankFormError(RuntimeError):
     pass
 
 
+class BankDryStop(RuntimeError):
+    """Сверка формы ок. «Подтвердить и перевести» и SMS не трогаем."""
+
+
 class BankPostPaymentError(BankFormError):
     """Оплата уже ушла; упали на пост-шаге (обычно «На главную»).
 

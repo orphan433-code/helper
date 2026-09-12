@@ -17,7 +17,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 import urllib.error
 import urllib.request
@@ -39,13 +38,20 @@ from core.decline_bins import (
     DECLINE_DEFAULT_PER_RUN,
     clamp_decline_limit,
 )
-from core.deals_ui_local import redirect_ui_filters, resolve_redirect_bin_prefixes
+from core.decline_hosts import decline_api_base_url, normalize_decline_service
+from core.host_session import profile_dir, service_from_url
+from core.deals_ui_local import (
+    decline_ui_service,
+    redirect_ui_filters,
+    resolve_redirect_bin_prefixes,
+)
 from core.redirect_bins import REDIRECT_BIN_PREFIXES, normalize_redirect_prefixes
 from core.redirect_rules import (
     REDIRECT_MAX_REMAINING_HOURS,
     REDIRECT_SKIP_BANK_PATTERNS,
     REDIRECT_SKIP_CARD_PREFIXES,
 )
+from platcore.api_client import urlopen_read
 
 _DEFAULT_TOKEN_KEYS = (
     "token",
@@ -73,17 +79,15 @@ def load_config() -> dict:
     return data
 
 
-def _api_base_url(cfg: dict) -> str:
-    decline = cfg.get("bank_decline") or {}
-    explicit = str(decline.get("api_base_url") or "").strip().rstrip("/")
-    if explicit:
-        return explicit
-    monitor = str(cfg.get("dashboard", {}).get("monitor_url") or "").strip()
-    if monitor:
-        parsed = urlparse(monitor)
-        if parsed.scheme and parsed.netloc:
-            return f"{parsed.scheme}://{parsed.netloc}"
-    return "https://hz.temkitemki.work"
+def _api_base_url(
+    cfg: dict,
+    *,
+    service: object = None,
+    redirect: bool = False,
+) -> str:
+    if service is None and not redirect:
+        service = decline_ui_service()
+    return decline_api_base_url(cfg, service=service, redirect=redirect)
 
 
 def _decline_patterns(cfg: dict) -> list[str]:
@@ -317,7 +321,7 @@ def _strip_bearer(raw: str) -> str:
 
 async def _read_token_from_browser(cfg: dict, base_url: str) -> str | None:
     browser_cfg = cfg.get("browser") or {}
-    profile = (ROOT / browser_cfg.get("user_data_dir", "../CNY/browser_profile")).resolve()
+    profile = profile_dir(cfg, service=service_from_url(base_url))
     keys = list(_token_keys(cfg))
     keys_json = json.dumps(keys)
 
@@ -362,7 +366,7 @@ async def _read_token_from_browser(cfg: dict, base_url: str) -> str | None:
 
 async def debug_storage_keys(cfg: dict, base_url: str) -> None:
     browser_cfg = cfg.get("browser") or {}
-    profile = (ROOT / browser_cfg.get("user_data_dir", "../CNY/browser_profile")).resolve()
+    profile = profile_dir(cfg, service=service_from_url(base_url))
 
     async with async_playwright() as p:
         context = await p.chromium.launch_persistent_context(
@@ -395,22 +399,14 @@ async def debug_storage_keys(cfg: dict, base_url: str) -> None:
 
 
 async def resolve_token(cfg: dict, base_url: str) -> str:
-    decline = cfg.get("bank_decline") or {}
-    for key in (
-        decline.get("token"),
-        os.environ.get(decline.get("token_env") or "PLATCORE_TOKEN"),
-        os.environ.get("PLATCORE_TOKEN"),
-    ):
-        if key and str(key).strip():
-            return _strip_bearer(str(key))
+    """Тот же кэш что «Вход» в UI: runtime/eze_token.txt / platcore_token.txt."""
+    from core.validators import PanicError
+    from platcore.api_client import resolve_token as resolve_api_token
 
-    token = await _read_token_from_browser(cfg, base_url)
-    if token:
-        return token
-    raise SystemExit(
-        "Не найден Bearer-токен. Задайте PLATCORE_TOKEN, bank_decline.token в config.yaml "
-        "или залогиньтесь в browser_profile и повторите."
-    )
+    try:
+        return await resolve_api_token(cfg, base_url)
+    except PanicError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def _http_json(
@@ -431,19 +427,21 @@ def _http_json(
             "Accept": "application/json",
         },
     )
+    path = urlparse(url).path or url
     try:
-        with urllib.request.urlopen(req, timeout=45) as resp:
-            raw = resp.read()
-            if not raw:
-                return resp.status, None
-            return resp.status, json.loads(raw.decode("utf-8"))
+        status, raw = urlopen_read(req)
+        if not raw:
+            return status, None
+        return status, json.loads(raw.decode("utf-8"))
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
         try:
             detail = json.loads(raw)
         except json.JSONDecodeError:
             detail = raw
-        raise RuntimeError(f"HTTP {exc.code} {method} {url}: {detail}") from exc
+        raise RuntimeError(f"HTTP {exc.code} {method} {path}: {detail}") from exc
+    except TimeoutError as exc:
+        raise RuntimeError(f"{method} {path}: {exc}") from exc
 
 
 def fetch_deals_by_status(
@@ -645,9 +643,14 @@ def _emit_ui_result(payload: dict[str, Any]) -> None:
 
 async def run(args: argparse.Namespace) -> int:
     cfg = load_config()
-    base_url = _api_base_url(cfg)
     do_redirect = bool(getattr(args, "redirect", False))
     action = "redirect" if do_redirect else "cancel"
+    service = normalize_decline_service(
+        getattr(args, "service", None) or (None if do_redirect else decline_ui_service())
+    )
+    if do_redirect:
+        service = "hz"
+    base_url = _api_base_url(cfg, service=service, redirect=do_redirect)
     deal_status = str(getattr(args, "deal_status", None) or "new").strip().lower()
     if deal_status not in ("new", "pending"):
         raise SystemExit(f"Неизвестный --deal-status: {deal_status!r} (new|pending)")
@@ -786,7 +789,8 @@ async def run(args: argparse.Namespace) -> int:
         return 0
 
     token = await resolve_token(cfg, base_url)
-    print(f"[INFO] API: {base_url}")
+    host_tag = "" if do_redirect else f" ({service})"
+    print(f"[INFO] API: {base_url}{host_tag}")
     if do_redirect:
         amt_parts = []
         if min_amt is not None:
@@ -856,9 +860,27 @@ async def run(args: argparse.Namespace) -> int:
     mode_label = "РЕДИРЕКТ" if do_redirect else "ОТМЕНА"
     print(f"[INFO] Режим: {mode_label}{' (execute)' if args.execute else ' dry-run'}\n")
 
-    rows = fetch_deals_by_status(
-        base_url, token, cfg, deal_status=deal_status
-    )
+    try:
+        rows = fetch_deals_by_status(
+            base_url, token, cfg, deal_status=deal_status
+        )
+    except RuntimeError as exc:
+        word = "Редирект" if do_redirect else "Отмена"
+        msg = f"{word}: {exc}"
+        print(f"[ERROR] {msg}")
+        _emit_ui_result(
+            {
+                "phase": "done",
+                "action": action,
+                "cancelled": 0,
+                "redirected": 0,
+                "failed": 1,
+                "total": 0,
+                "message": msg,
+                "deals": [],
+            }
+        )
+        return 0
     print(f"[INFO] findNew: {len(rows)} сделок со status={deal_status}\n")
 
     if args.list:
@@ -1044,7 +1066,7 @@ async def run(args: argparse.Namespace) -> int:
                 deals_ui.append(
                     _deal_ui_row(row, ok=False, error=f"Ответ сервера {status}")
                 )
-        except RuntimeError as exc:
+        except (RuntimeError, TimeoutError, OSError) as exc:
             print(f"    → ОШИБКА: {exc}")
             failed += 1
             deals_ui.append(_deal_ui_row(row, ok=False, error=str(exc)))
@@ -1150,7 +1172,7 @@ def main() -> None:
         metavar="BIN",
         help=(
             "BIN карты для редиректа (можно несколько раз). "
-            "Каталог банков + 557755. Если указан — только эти карты."
+            "BIN из каталога банков. Если указан — только эти карты."
         ),
     )
     parser.add_argument(
@@ -1222,6 +1244,12 @@ def main() -> None:
     parser.add_argument("--max-amount", type=float, default=None)
     parser.add_argument("--list", action="store_true", help="список банков в findNew")
     parser.add_argument("--debug-token", action="store_true", help="ключи localStorage")
+    parser.add_argument(
+        "--service",
+        choices=("hz", "eze"),
+        default=None,
+        help="хост отмены: hz или eze. Редирект всегда hz.",
+    )
     args = parser.parse_args()
     raise SystemExit(asyncio.run(run(args)))
 

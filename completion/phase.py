@@ -418,6 +418,20 @@ def _api_http_dispute(cfg: dict | None) -> bool:
     return bool(flow.get("enabled"))
 
 
+def _eze_host_from_ledger(ledger: dict | None) -> bool:
+    data = ledger or {}
+    return (
+        str(data.get("service") or "") == "eze"
+        or str(data.get("source") or "") == "eze_ocr"
+    )
+
+
+def _eze_api_url() -> str:
+    from core.decline_hosts import DECLINE_SERVICE_EZE, DECLINE_SERVICE_URLS
+
+    return DECLINE_SERVICE_URLS[DECLINE_SERVICE_EZE]
+
+
 async def _complete_one_matched_deal(
     deal: SessionDeal,
     *,
@@ -457,7 +471,9 @@ async def _complete_one_matched_deal(
             )
             return
 
-    http_complete = _api_http_complete(cfg)
+    eze_ocr = str((deal.ledger or {}).get("source") or "") == "eze_ocr"
+    eze_host = _eze_host_from_ledger(deal.ledger)
+    http_complete = _api_http_complete(cfg) or eze_host
     page = page_by_order.get(deal.order_id)
     if not http_complete and (page is None or page.is_closed()):
         deal.state = DealCompletionState.FAILED
@@ -496,6 +512,7 @@ async def _complete_one_matched_deal(
             from platcore.api_complete import complete_deal_via_api
 
             info(f"#{deal.index}: API upload + approve, без кликов")
+            eze_url = _eze_api_url() if eze_host else None
             result = await asyncio.wait_for(
                 complete_deal_via_api(
                     task_id=deal.task_id,
@@ -508,6 +525,12 @@ async def _complete_one_matched_deal(
                     cfg=cfg or {},
                     fake_money_sent=fake_money_sent,
                     give_fiat=deal.give_fiat,
+                    extra_files=[
+                        Path(p)
+                        for p in (getattr(deal, "extra_proofs", None) or [])
+                    ],
+                    skip_hz=eze_ocr,
+                    base_url=eze_url,
                     on_progress=_progress,
                 ),
                 timeout=2400.0 if video is not None else 180.0,
@@ -835,12 +858,14 @@ async def cancel_deal_on_platcore(
         if use_api:
             from platcore.api_dispute import dispute_deal_via_api
 
+            eze_url = _eze_api_url() if _eze_host_from_ledger(deal.ledger) else None
             await dispute_deal_via_api(
                 cfg,
                 order_id=deal.order_id,
                 task_id=deal.task_id,
                 dispute=dispute,
                 deal_index=deal.index,
+                base_url=eze_url,
             )
         else:
             if page is None or page.is_closed():

@@ -13,9 +13,9 @@ export function WorkPulse({
   const outer = compact ? 11 : 42;
   const inner = compact ? 6 : 24;
   const wrap = compact ? "size-8" : "size-28";
-  const dot = tone === "red" ? "bg-red-600" : tone === "amber" ? "bg-amber-500" : "bg-slate-800";
+  const dot = tone === "red" ? "bg-danger" : tone === "amber" ? "bg-amber-500" : "bg-primary";
   const dotSoft =
-    tone === "red" ? "bg-red-300" : tone === "amber" ? "bg-amber-300" : "bg-slate-400";
+    tone === "red" ? "bg-danger/40" : tone === "amber" ? "bg-amber-300" : "bg-foreground/35";
 
   return (
     <div className={cn("relative flex items-center justify-center", wrap)}>
@@ -30,7 +30,7 @@ export function WorkPulse({
       >
         <span className={cn("size-2.5 rounded-full", dot)} />
         <span className={cn("size-2 rounded-full", dotSoft)} />
-        <span className={cn("size-1.5 rounded-full bg-slate-300")} />
+        <span className={cn("size-1.5 rounded-full bg-foreground/25")} />
       </OrbitingCircles>
       <OrbitingCircles
         radius={inner}
@@ -42,7 +42,7 @@ export function WorkPulse({
         <span
           className={cn(
             "size-1.5 rounded-full",
-            tone === "red" ? "bg-red-400" : tone === "amber" ? "bg-amber-400" : "bg-slate-600",
+            tone === "red" ? "bg-danger/70" : tone === "amber" ? "bg-amber-400" : "bg-foreground/55",
           )}
         />
       </OrbitingCircles>

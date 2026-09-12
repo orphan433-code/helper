@@ -220,7 +220,13 @@ type Settings = {
   maxAmount: string;
   allowVisa: boolean;
   allowMastercard: boolean;
+  currencyList: string[];
+  currencies: Record<string, boolean>;
   fromPending: boolean;
+  pipelineService: "hz" | "eze";
+  dryStopBeforePay: boolean;
+  skipTbc: boolean;
+  skipBog: boolean;
   pipelineBinList: string[];
   pipelineBins: Record<string, boolean>;
   redirMax: string;
@@ -235,9 +241,11 @@ type Settings = {
   declineBinList: string[];
   declineBins: Record<string, boolean>;
   declineTbc: boolean;
+  declineMastercardOnly: boolean;
   declineMax: string;
   declineMinAmt: string;
   declineMaxAmt: string;
+  declineService: "hz" | "eze";
   acceptNamesMax: string;
   acceptNamesMinAmt: string;
   acceptNamesMaxAmt: string;
@@ -252,11 +260,15 @@ type ConsoleState = {
   jobMode: string;
   waitingConfirm: boolean;
   confirmMode: string;
+  confirmPrompt: string;
   appVersion: string;
   agentConfigured: boolean;
   mediaDir: string;
   adbText: string;
   adbOk: boolean;
+  loginHzOk: boolean;
+  loginEzeOk: boolean;
+  loginTarget: "hz" | "eze";
   settings: Settings;
   pipeline: ProgressPanel;
   receipts: ProgressPanel;
@@ -286,6 +298,7 @@ type ConsoleState = {
   appendCancelAlert: (payload: Record<string, unknown>) => void;
   clearCancelAlerts: () => void;
   setConfirmPrompt: (prompt: string, mode: string) => void;
+  hideConfirmPrompt: () => void;
   setRecoveryPrompt: (
     message: string,
     detail: string,
@@ -317,11 +330,15 @@ export const useConsole = create<ConsoleState>((set, get) => ({
   jobMode: "",
   waitingConfirm: false,
   confirmMode: "",
+  confirmPrompt: "",
   appVersion: "?",
   agentConfigured: false,
   mediaDir: "Папка загрузок",
   adbText: "Не проверен",
   adbOk: false,
+  loginHzOk: false,
+  loginEzeOk: false,
+  loginTarget: "hz",
   settings: {
     maxDeals: 5,
     emptyPasses: 2,
@@ -329,7 +346,13 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     maxAmount: "",
     allowVisa: true,
     allowMastercard: false,
+    currencyList: ["EUR", "THB", "TRY"],
+    currencies: { EUR: false, THB: false, TRY: false },
     fromPending: false,
+    pipelineService: "hz",
+    dryStopBeforePay: false,
+    skipTbc: true,
+    skipBog: true,
     pipelineBinList: ["537524", "557755"],
     pipelineBins: {
       "537524": false,
@@ -351,9 +374,11 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     declineBinList: [...CATALOG_BINS],
     declineBins: { ...DECLINE_FALLBACK_TOGGLES },
     declineTbc: true,
+    declineMastercardOnly: false,
     declineMax: "10",
     declineMinAmt: "",
     declineMaxAmt: "",
+    declineService: "hz",
     acceptNamesMax: "5",
     acceptNamesMinAmt: "",
     acceptNamesMaxAmt: "",
@@ -399,8 +424,17 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     const patch: Partial<ConsoleState> = {
       running,
       jobMode: mode,
-      waitingConfirm: running ? get().waitingConfirm : false,
+      waitingConfirm: running
+        ? mode === "login"
+          ? true
+          : get().waitingConfirm
+        : false,
     };
+    if (running && mode === "login") {
+      patch.confirmMode = "login";
+      patch.statusKind = "waiting";
+      patch.statusLabel = LABELS.waiting;
+    }
     if (running && (mode === "redirect" || mode === "decline" || mode === "accept_names")) {
       patch.decline = busyDeclinePanel(mode);
       patch.declineResultOpen = false;
@@ -436,7 +470,39 @@ export const useConsole = create<ConsoleState>((set, get) => ({
       allowMastercard: has("allow_mastercard")
         ? !!state.allow_mastercard
         : s.allowMastercard,
+      currencyList:
+        has("currency_list") && Array.isArray(state.currency_list)
+          ? (state.currency_list as string[]).map((c) => String(c).toUpperCase())
+          : s.currencyList,
+      currencies: (() => {
+        const list =
+          has("currency_list") && Array.isArray(state.currency_list)
+            ? (state.currency_list as string[]).map((c) => String(c).toUpperCase())
+            : s.currencyList;
+        const selected = new Set(
+          has("currencies") && Array.isArray(state.currencies)
+            ? (state.currencies as unknown[]).map((c) => String(c || "").toUpperCase())
+            : Object.entries(s.currencies)
+                .filter(([, on]) => on)
+                .map(([code]) => code),
+        );
+        const next: Record<string, boolean> = {};
+        for (const code of list) {
+          next[code] = selected.has(code);
+        }
+        return next;
+      })(),
       fromPending: has("from_pending") ? !!state.from_pending : s.fromPending,
+      pipelineService: has("pipeline_service")
+        ? String(state.pipeline_service || "hz").toLowerCase() === "eze"
+          ? "eze"
+          : "hz"
+        : s.pipelineService,
+      dryStopBeforePay: has("dry_stop_before_pay")
+        ? !!state.dry_stop_before_pay
+        : s.dryStopBeforePay,
+      skipTbc: has("skip_tbc") ? state.skip_tbc !== false : s.skipTbc,
+      skipBog: has("skip_bog") ? state.skip_bog !== false : s.skipBog,
       pipelineBinList:
         has("pipeline_bin_list") && Array.isArray(state.pipeline_bin_list)
           ? (state.pipeline_bin_list as string[]).map(String)
@@ -532,6 +598,11 @@ export const useConsole = create<ConsoleState>((set, get) => ({
       declineMaxAmt: has("decline_max_amount")
         ? String(state.decline_max_amount ?? "")
         : s.declineMaxAmt,
+      declineService: has("decline_service")
+        ? String(state.decline_service || "hz").toLowerCase() === "eze"
+          ? "eze"
+          : "hz"
+        : s.declineService,
     };
     if (state.video_min_usdt != null && state.video_min_usdt !== "") {
       window.__videoMinUsdt = Number(state.video_min_usdt);
@@ -549,6 +620,16 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     }
     if (has("adb_ok")) {
       patch.adbOk = !!state.adb_ok;
+    }
+    if (has("login_hz_ok")) {
+      patch.loginHzOk = !!state.login_hz_ok;
+    }
+    if (has("login_eze_ok")) {
+      patch.loginEzeOk = !!state.login_eze_ok;
+    }
+    if (has("login_target")) {
+      patch.loginTarget =
+        String(state.login_target || "").toLowerCase() === "eze" ? "eze" : "hz";
     }
     if (has("app_version") && state.app_version) {
       patch.appVersion = String(state.app_version);
@@ -576,8 +657,23 @@ export const useConsole = create<ConsoleState>((set, get) => ({
 
       patch.running = running;
       patch.jobMode = jobMode;
-      patch.waitingConfirm = !!state.confirm_enabled;
-      patch.confirmMode = state.confirm_enabled ? jobMode : "";
+      if (running && jobMode === "login") {
+        patch.waitingConfirm = true;
+        patch.confirmMode = "login";
+        if (state.confirm_enabled && has("confirm_prompt") && state.confirm_prompt) {
+          patch.confirmPrompt = String(state.confirm_prompt);
+        }
+      } else {
+        patch.waitingConfirm = !!state.confirm_enabled;
+        patch.confirmMode = state.confirm_enabled
+          ? String(state.confirm_mode || get().confirmMode || jobMode)
+          : "";
+        if (!state.confirm_enabled) {
+          patch.confirmPrompt = "";
+        } else if (has("confirm_prompt") && state.confirm_prompt) {
+          patch.confirmPrompt = String(state.confirm_prompt);
+        }
+      }
       patch.statusText =
         kind === "idle" && (status.startsWith("Готов") || status === IDLE_STATUS)
           ? IDLE_STATUS
@@ -886,11 +982,23 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     set({
       waitingConfirm: true,
       confirmMode: mode,
-      statusText: prompt,
+      confirmPrompt: prompt,
+      statusText: prompt.replace(/\n/g, " "),
       statusKind: "waiting",
       statusLabel: LABELS.waiting,
     });
     get().appendLog(`>>> ${prompt}`);
+  },
+
+  hideConfirmPrompt: () => {
+    if (!get().waitingConfirm) return;
+    set({
+      waitingConfirm: false,
+      confirmMode: "",
+      confirmPrompt: "",
+      statusKind: get().running ? "running" : "idle",
+      statusLabel: get().running ? LABELS.running : LABELS.idle,
+    });
   },
 
   setRecoveryPrompt: (message, detail, hint, summary, allowRetry) => {

@@ -9,6 +9,11 @@ from urllib.parse import parse_qs, urlparse
 from playwright.async_api import Locator, Page
 
 from core.models import RowPreview
+from core.deals_ui_local import pipeline_ui_skip_bog, pipeline_ui_skip_tbc
+from core.pipeline_currencies import (
+    fiat_code_from_amount_raw,
+    skip_reason_for_currency,
+)
 from core.validators import (
     PanicError,
     clean_account,
@@ -16,6 +21,7 @@ from core.validators import (
     parse_amount,
     skip_reason_for_card_brand,
     skip_reason_for_preview,
+    skip_reason_for_ignored_banks,
 )
 
 LIST_BODY = 'tbody[data-test-id="virtuoso-item-list"]'
@@ -510,6 +516,7 @@ async def collect_eligible_new_previews_scrolled(
     poll_sec: float = 2.0,
     allow_visa: bool = True,
     allow_mastercard: bool = True,
+    currencies: list[str] | None = None,
 ) -> list[RowPreview]:
     await wait_for_list(page)
     await scroll_platcore_list_to_top(page)
@@ -528,6 +535,19 @@ async def collect_eligible_new_previews_scrolled(
                 max_amount=max_amount,
             )
             if skip:
+                continue
+            skip_bank = skip_reason_for_ignored_banks(
+                preview.account_raw,
+                skip_tbc=pipeline_ui_skip_tbc(),
+                skip_bog=pipeline_ui_skip_bog(),
+            )
+            if skip_bank:
+                continue
+            skip_cur = skip_reason_for_currency(
+                fiat_code_from_amount_raw(preview.amount_raw),
+                currencies,
+            )
+            if skip_cur:
                 continue
             skip_card = skip_reason_for_card_brand(
                 preview.account_raw,

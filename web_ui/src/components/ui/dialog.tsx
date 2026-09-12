@@ -28,7 +28,7 @@ function DialogOverlay({
   return (
     <DialogPrimitive.Overlay
       className={cn(
-        "fixed inset-0 z-[100] bg-slate-900/40 backdrop-blur-[3px] animate-fade-in",
+        "fixed inset-0 z-[100] bg-foreground/25 backdrop-blur-sm animate-fade-in",
         className,
       )}
       {...props}
@@ -49,15 +49,14 @@ function DialogContent({
       <DialogOverlay />
       <DialogPrimitive.Content
         className={cn(
-          "fixed left-1/2 top-1/2 z-[101] w-[calc(100%-2rem)] max-w-md overflow-hidden rounded-2xl bg-white p-5 outline-none animate-dialog-in",
-          "shadow-[0_0_0_1px_rgba(15,23,42,0.06),0_24px_48px_rgba(15,23,42,0.16)]",
+          "fixed left-1/2 top-1/2 z-[101] w-[calc(100%-2rem)] max-w-md overflow-hidden rounded-2xl border border-border/40 bg-background/90 p-5 outline-none shadow-2xl backdrop-blur-xl animate-dialog-in",
           className,
         )}
         {...props}
       >
         {children}
         {showClose && (
-          <DialogPrimitive.Close className="absolute right-3.5 top-3.5 rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-800 cursor-pointer">
+          <DialogPrimitive.Close className="absolute right-3.5 top-3.5 cursor-pointer rounded-lg p-1.5 text-foreground/45 transition hover:bg-foreground/[0.06] hover:text-foreground">
             <X className="size-4" />
           </DialogPrimitive.Close>
         )}
@@ -76,7 +75,7 @@ function DialogTitle({
 }: React.ComponentProps<typeof DialogPrimitive.Title>) {
   return (
     <DialogPrimitive.Title
-      className={cn("text-[15px] font-semibold tracking-tight text-slate-900", className)}
+      className={cn("text-[15px] font-semibold tracking-tight text-foreground", className)}
       {...props}
     />
   );
@@ -88,7 +87,7 @@ function DialogDescription({
 }: React.ComponentProps<typeof DialogPrimitive.Description>) {
   return (
     <DialogPrimitive.Description
-      className={cn("text-sm leading-snug text-slate-500 whitespace-pre-wrap", className)}
+      className={cn("whitespace-pre-wrap text-sm leading-snug text-foreground/55", className)}
       {...props}
     />
   );
@@ -109,10 +108,10 @@ function DialogTone({ tone }: { tone: DialogToneKind }) {
     <span
       className={cn(
         "flex size-9 shrink-0 items-center justify-center rounded-lg",
-        tone === "danger" && "bg-red-50 text-red-600",
-        tone === "ok" && "bg-slate-900 text-white",
-        tone === "warn" && "bg-amber-50 text-amber-700",
-        tone === "info" && "bg-slate-100 text-slate-600",
+        tone === "danger" && "bg-danger-soft text-danger",
+        tone === "ok" && "bg-primary text-primary-foreground",
+        tone === "warn" && "bg-amber-500/10 text-amber-700",
+        tone === "info" && "bg-foreground/5 text-foreground/65",
       )}
     >
       <Icon className="size-5" />

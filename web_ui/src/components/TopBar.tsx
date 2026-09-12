@@ -1,66 +1,53 @@
+import { IDLE_STATUS } from "@/lib/types";
 import { useConsole } from "@/store/console";
 import { cn } from "@/lib/utils";
 
 export function TopBar() {
   const statusText = useConsole((s) => s.statusText);
   const statusKind = useConsole((s) => s.statusKind);
-  const statusLabel = useConsole((s) => s.statusLabel);
   const appVersion = useConsole((s) => s.appVersion);
-  const view = useConsole((s) => s.view);
+
+  const idle =
+    statusKind === "idle" &&
+    (!statusText || statusText === IDLE_STATUS || statusText === "Можно запускать");
+  const showStatus = !idle && !!statusText.trim();
 
   return (
-    <header className="mb-5 space-y-2 px-0.5">
-      <div className="flex items-baseline justify-between gap-3">
-        <div className="flex items-baseline gap-2">
-          <h1 className="text-lg font-bold tracking-tight text-slate-900">TJS</h1>
-          <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-slate-400">
-            Operator
-          </span>
-        </div>
-        <span className="font-mono text-[11px] text-slate-400">v{appVersion}</span>
+    <header className="mb-4 flex items-center justify-between gap-3 px-0.5">
+      <div className="flex min-w-0 items-baseline gap-2">
+        <h1 className="text-lg font-semibold tracking-tight text-foreground">TJS</h1>
+        <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-foreground/45">
+          Operator
+        </span>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-slate-200/80 pb-3">
-        {view === "run" ? (
-          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-400">
-            Телефон → вход → переводы → чеки
-          </p>
-        ) : view === "deals" ? (
-          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-400">
-            Редирект · Отмена
-          </p>
-        ) : view === "agent" ? (
-          <span className="sr-only">AI команда</span>
-        ) : (
-          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-400">
-            Журнал
+      <div className="flex min-w-0 items-center gap-3">
+        {showStatus && (
+          <p
+            className={cn(
+              "flex min-w-0 max-w-[min(28rem,52vw)] items-center gap-1.5 text-[13px] leading-none",
+              statusKind === "error" && "text-danger",
+              statusKind === "waiting" && "text-amber-700",
+              statusKind === "running" && "text-foreground",
+              statusKind === "success" && "text-ok",
+              statusKind === "idle" && "text-foreground/55",
+            )}
+            role="status"
+          >
+            <span
+              className={cn(
+                "size-1.5 shrink-0 rounded-full",
+                statusKind === "idle" && "bg-foreground/35",
+                statusKind === "running" && "bg-primary",
+                statusKind === "waiting" && "bg-amber-500",
+                statusKind === "success" && "bg-ok",
+                statusKind === "error" && "bg-danger",
+              )}
+            />
+            <span className="min-w-0 truncate font-medium">{statusText}</span>
           </p>
         )}
-
-        <p
-          className={cn(
-            "flex min-w-0 max-w-full items-center gap-1.5 text-[13px] leading-none",
-            statusKind === "error" && "text-red-600",
-            statusKind === "waiting" && "text-amber-700",
-            statusKind === "running" && "text-slate-800",
-            (statusKind === "idle" || statusKind === "success") && "text-slate-500",
-          )}
-          role="status"
-        >
-          <span
-            className={cn(
-              "size-1.5 shrink-0 rounded-full",
-              statusKind === "idle" && "bg-slate-400",
-              statusKind === "running" && "bg-slate-800",
-              statusKind === "waiting" && "bg-amber-500",
-              statusKind === "success" && "bg-slate-600",
-              statusKind === "error" && "bg-red-500",
-            )}
-          />
-          <span className="shrink-0 font-medium">{statusLabel}</span>
-          <span className="text-slate-300">·</span>
-          <span className="min-w-0 truncate font-normal">{statusText}</span>
-        </p>
+        <span className="shrink-0 font-mono text-[11px] text-foreground/45">v{appVersion}</span>
       </div>
     </header>
   );

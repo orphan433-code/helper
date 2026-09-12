@@ -440,94 +440,256 @@ async def _find_order_info_approve_button(page: Page):
     return None
 
 
-async def click_order_info_approve(page: Page, *, timing: HumanTiming) -> None:
+async def _approve_button_ready(btn) -> bool:
+    """Approve видна и не disabled (Chakra: disabled / aria-disabled)."""
+    try:
+        if not await btn.is_visible():
+            return False
+    except Exception:
+        return False
+    try:
+        if await btn.is_disabled():
+            return False
+    except Exception:
+        pass
+    try:
+        if await btn.get_attribute("disabled") is not None:
+            return False
+    except Exception:
+        pass
+    try:
+        aria = (await btn.get_attribute("aria-disabled") or "").strip().lower()
+        if aria in ("true", "1"):
+            return False
+    except Exception:
+        pass
+    try:
+        data = (await btn.get_attribute("data-disabled") or "").strip().lower()
+        if data in ("true", "1"):
+            return False
+    except Exception:
+        pass
+    return True
+
+
+async def _wait_click_order_info_approve(
+    page: Page,
+    *,
+    timing: HumanTiming,
+    timeout_sec: float = 12.0,
+    poll_sec: float = 0.2,
+) -> bool:
+    """
+    Ждём активный Approve и жмём. True = клик или уже не нужен (dropzone).
+    False = за timeout так и не дождались.
+    """
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        if await _has_completion_dropzone(page):
+            return True
+        approve = await _find_order_info_approve_button(page)
+        if approve is not None and await _approve_button_ready(approve):
+            try:
+                debug("Order info → Approve")
+                await human_click(approve, timing=timing)
+                await asyncio.sleep(0.45)
+                return True
+            except Exception as exc:
+                debug(f"Approve клик мимо ({exc}), ещё раз…")
+        await asyncio.sleep(poll_sec)
+    return False
+
+
+async def click_order_info_approve(
+    page: Page,
+    *,
+    timing: HumanTiming,
+    timeout_sec: float = 12.0,
+    attempts: int = 3,
+) -> None:
     """
     Order info → Approve.
     Для pending: после клика ждём post-accept модалку (реквизиты → банк),
     dropzone/Money sent — уже на фазе чеков.
+    Быстрый ретрай: кнопка часто ещё disabled после goto.
     """
     await page.wait_for_load_state("domcontentloaded")
-    await page.wait_for_timeout(450)
 
-    if await _has_completion_dropzone(page):
-        debug("Dropzone + Money sent уже на экране (Approve не нужен)")
-        return
+    for attempt in range(1, max(1, attempts) + 1):
+        if await _has_completion_dropzone(page):
+            debug("Dropzone + Money sent уже на экране (Approve не нужен)")
+            return
 
-    approve = await _find_order_info_approve_button(page)
-    if approve is None:
-        # Возможно уже post-accept модалка без Order info
+        if await _wait_click_order_info_approve(
+            page, timing=timing, timeout_sec=timeout_sec
+        ):
+            if await _has_completion_dropzone(page):
+                return
+            from platcore.card import wait_for_post_accept_deal_card
+
+            try:
+                await wait_for_post_accept_deal_card(page, verbose=False)
+                debug("Post-accept модалка уже открыта")
+                return
+            except PanicError:
+                if await _has_completion_dropzone(page):
+                    return
+                if await _wait_click_order_info_approve(
+                    page, timing=timing, timeout_sec=4.0
+                ):
+                    try:
+                        await wait_for_post_accept_deal_card(page, verbose=False)
+                        return
+                    except PanicError:
+                        if await _has_completion_dropzone(page):
+                            return
+
+        if attempt >= attempts:
+            break
+        warn(f"Approve не готов — reload {attempt}/{attempts}")
+        try:
+            await page.reload(wait_until="domcontentloaded")
+        except Exception:
+            pass
+        await asyncio.sleep(0.35)
+
+    raise PanicError(
+        "PlatCore: нет активного Approve в Order info и нет модалки сделки "
+        f"(url={page.url!r})"
+    )
+
+
+async def ensure_completion_deal_ready(
+    page: Page,
+    *,
+    timing: HumanTiming,
+    attempts: int = 3,
+    approve_timeout_sec: float = 12.0,
+    need_dropzone: bool = True,
+) -> None:
+    """
+    После reopen по URL часто открывается Order info (Approve/Decline),
+    а не модалка с dropzone. Кликаем Approve → ждём Attach document.
+    Ретрай: Approve иногда disabled / ещё не в DOM.
+
+    need_dropzone=False — для hz-calc prime: достаточно Approve → #hz-calc.
+    """
+    for attempt in range(1, max(1, attempts) + 1):
+        await page.wait_for_load_state("domcontentloaded")
+
+        if need_dropzone and await _has_completion_dropzone(page):
+            debug("Dropzone + Money sent уже на экране")
+            return
+        if not need_dropzone:
+            try:
+                el = page.locator("#hz-calc").first
+                if await el.count() > 0 and await el.is_visible():
+                    debug("hz-calc уже на экране")
+                    return
+            except Exception:
+                pass
+
+        clicked = await _wait_click_order_info_approve(
+            page, timing=timing, timeout_sec=approve_timeout_sec
+        )
+        if not clicked:
+            # Может уже открыта модалка без кнопки Approve
+            if need_dropzone and await _has_completion_dropzone(page):
+                return
+            if not need_dropzone:
+                try:
+                    await page.locator("#hz-calc").first.wait_for(
+                        state="visible", timeout=3_000
+                    )
+                    return
+                except Exception:
+                    pass
+            if attempt < attempts:
+                warn(f"Нет Approve — reload {attempt}/{attempts}")
+                try:
+                    await page.reload(wait_until="domcontentloaded")
+                except Exception:
+                    pass
+                await asyncio.sleep(0.35)
+                continue
+            raise PanicError(
+                "PlatCore: нет Approve в Order info и нет dropzone/hz-calc "
+                f"(url={page.url!r})"
+            )
+
+        if need_dropzone and await _has_completion_dropzone(page):
+            debug("Модалка с dropzone открыта")
+            return
+
+        if not need_dropzone:
+            try:
+                await page.locator("#hz-calc").first.wait_for(
+                    state="visible", timeout=15_000
+                )
+                debug("hz-calc после Approve")
+                return
+            except Exception as exc:
+                if attempt < attempts:
+                    warn(
+                        f"hz-calc после Approve нет — reload "
+                        f"{attempt}/{attempts}"
+                    )
+                    try:
+                        await page.reload(wait_until="domcontentloaded")
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.35)
+                    continue
+                raise PanicError(
+                    "PlatCore: #hz-calc не появился после Approve"
+                ) from exc
+
         from platcore.card import wait_for_post_accept_deal_card
 
         try:
             await wait_for_post_accept_deal_card(page, verbose=False)
-            debug("Post-accept модалка уже открыта")
+        except PanicError:
+            if not await _has_completion_dropzone(page):
+                if attempt < attempts:
+                    warn(
+                        f"После Approve нет модалки — reload {attempt}/{attempts}"
+                    )
+                    try:
+                        await page.reload(wait_until="domcontentloaded")
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.35)
+                    continue
+                raise
+
+        try:
+            await page.locator(DROPZONE).first.wait_for(
+                state="visible", timeout=25_000
+            )
+            await page.get_by_role(
+                "button", name="Money sent", exact=True
+            ).first.wait_for(state="visible", timeout=20_000)
+            debug("Attach document + Money sent готовы")
             return
-        except PanicError as exc:
+        except Exception as exc:
+            if attempt < attempts:
+                warn(
+                    f"Dropzone после Approve не вылез — reload "
+                    f"{attempt}/{attempts} ({exc})"
+                )
+                try:
+                    await page.reload(wait_until="domcontentloaded")
+                except Exception:
+                    pass
+                await asyncio.sleep(0.35)
+                continue
             raise PanicError(
-                "PlatCore: нет Approve в Order info и нет модалки сделки "
-                f"(url={page.url!r})"
+                "PlatCore: dropzone / Money sent не появились после Approve"
             ) from exc
 
-    try:
-        if await approve.is_visible():
-            debug("Order info → Approve")
-            await human_click(approve, timing=timing)
-            await asyncio.sleep(0.7)
-    except Exception as exc:
-        raise PanicError(f"PlatCore: не удалось нажать Approve: {exc}") from exc
-
-
-async def ensure_completion_deal_ready(page: Page, *, timing: HumanTiming) -> None:
-    """
-    После reopen по URL часто открывается Order info (Approve/Decline),
-    а не модалка с dropzone. Кликаем Approve → ждём Attach document.
-    """
-    await page.wait_for_load_state("domcontentloaded")
-    await page.wait_for_timeout(450)
-
-    if await _has_completion_dropzone(page):
-        debug("Dropzone + Money sent уже на экране")
-        return
-
-    approve = await _find_order_info_approve_button(page)
-    if approve is not None:
-        try:
-            if await approve.is_visible():
-                debug("Order info → Approve")
-                await human_click(approve, timing=timing)
-                await asyncio.sleep(0.7)
-        except Exception as exc:
-            raise PanicError(f"PlatCore: не удалось нажать Approve: {exc}") from exc
-    elif not await _has_completion_dropzone(page):
-        raise PanicError(
-            "PlatCore: нет Approve в Order info и нет dropzone "
-            f"(url={page.url!r})"
-        )
-
-    if await _has_completion_dropzone(page):
-        debug("Модалка с dropzone открыта")
-        return
-
-    from platcore.card import wait_for_post_accept_deal_card
-
-    try:
-        await wait_for_post_accept_deal_card(page, verbose=False)
-    except PanicError:
-        if not await _has_completion_dropzone(page):
-            raise
-
-    try:
-        await page.locator(DROPZONE).first.wait_for(state="visible", timeout=60_000)
-        await page.get_by_role("button", name="Money sent", exact=True).first.wait_for(
-            state="visible",
-            timeout=30_000,
-        )
-    except Exception as exc:
-        raise PanicError(
-            "PlatCore: dropzone / Money sent не появились после Approve"
-        ) from exc
-
-    debug("Attach document + Money sent готовы")
+    raise PanicError(
+        "PlatCore: dropzone / Money sent не появились после Approve"
+    )
 
 
 async def ensure_dropzone_on_page(page: Page) -> None:

@@ -692,7 +692,15 @@ def run_post_transfer_steps(
     verbose: bool = True,
 ) -> None:
     """Этапы 3c–5 после 2-го «Перевести» на форме."""
+    from bank.form import BankDryStop
+    from core.deals_ui_local import pipeline_ui_dry_stop
+
     cfg = _confirm_cfg()
+    if pipeline_ui_dry_stop():
+        from core.logkit import info
+
+        info("Тест: сверка формы ок — «Подтвердить и перевести» и SMS не жмём")
+        raise BankDryStop("тест: стоп до кода")
     if not cfg["post_transfer_enabled"]:
         if verbose:
             print("[INFO] Этапы 3c–5 пропущены (post_transfer_enabled: false)")

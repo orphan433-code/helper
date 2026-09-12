@@ -42,7 +42,7 @@ export function ProgressPanelView({
           : "mt-3 overflow-hidden rounded-xl border bg-muted/20 p-3",
         !nested && panel.processing && !panel.done && !busyVisual && "border-slate-300",
         !nested && busyVisual && "border-amber-300 bg-amber-50/50",
-        !nested && panel.done && !panel.hasErrors && "border-emerald-200 bg-emerald-50/40",
+        !nested && panel.done && !panel.hasErrors && "border-ok/25 bg-ok-soft/50",
         !nested && panel.done && panel.hasErrors && "border-amber-200",
       )}
     >
@@ -103,7 +103,7 @@ export function ProgressPanelView({
         </ul>
       )}
       {panel.errorDetail && (
-        <pre className="relative mt-2 whitespace-pre-wrap rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+        <pre className="relative mt-2 whitespace-pre-wrap rounded-lg border border-danger/20 bg-danger-soft p-2 text-xs text-danger">
           {panel.errorDetail}
         </pre>
       )}
@@ -120,7 +120,7 @@ function statusMeta(state: string, previewHint?: string, error?: string) {
     return {
       label: previewHint,
       className: ready
-        ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+        ? "bg-ok-soft text-ok border border-ok/20"
         : "bg-slate-100 text-slate-700",
     };
   }
@@ -130,41 +130,41 @@ function statusMeta(state: string, previewHint?: string, error?: string) {
       className:
         state === "skipped"
           ? "bg-amber-50 text-amber-800 border border-amber-200"
-          : "bg-red-50 text-red-700 border border-red-200",
+          : "bg-danger-soft text-danger border border-danger/20",
     };
   }
   switch (state) {
     case "paying":
       return {
         label: "Отправляю перевод…",
-        className: "bg-emerald-50 text-emerald-700 border border-emerald-200",
+        className: "bg-ok-soft text-ok border border-ok/20",
       };
     case "accepting":
       return {
         label: "Принимаю сделку…",
-        className: "bg-emerald-50 text-emerald-700 border border-emerald-200",
+        className: "bg-ok-soft text-ok border border-ok/20",
       };
     case "accepted":
       return {
         label: "Принята",
-        className: "bg-emerald-50 text-emerald-700 border border-emerald-200",
+        className: "bg-ok-soft text-ok border border-ok/20",
       };
     case "paid":
     case "done":
       return {
         label: "Оплачено",
-        className: "bg-emerald-100 text-emerald-800 border border-emerald-300",
+        className: "bg-ok-soft text-ok border border-ok/30",
       };
     case "searching":
     case "pending":
       return {
         label: state === "searching" ? "Поиск…" : "ожидает файлы",
-        className: "bg-teal-50 text-teal-700 border border-teal-200",
+        className: "bg-muted text-stone-600 border border-border",
       };
     case "matched":
       return {
         label: "файлы найдены",
-        className: "bg-emerald-50 text-emerald-700 border border-emerald-200",
+        className: "bg-ok-soft text-ok border border-ok/20",
       };
     case "uploading":
       return {
@@ -189,7 +189,7 @@ function statusMeta(state: string, previewHint?: string, error?: string) {
     case "error":
       return {
         label: "ошибка",
-        className: "bg-red-50 text-red-700 border border-red-200",
+        className: "bg-danger-soft text-danger border border-danger/20",
       };
     default:
       return {
@@ -278,9 +278,9 @@ function DealItem({
     <li
       className={cn(
         "rounded-lg border bg-white px-3 py-2.5 text-xs transition-colors",
-        d.active && "border-emerald-200 bg-emerald-50/40",
-        state === "uploading" && "border-amber-300 bg-amber-50/70",
-        (state === "paid" || state === "done") && "border-emerald-200 bg-emerald-50/70",
+        d.active && "border-ok/25 bg-ok-soft/40",
+        state === "uploading" && "border-amber-300/70 bg-amber-50/60",
+        (state === "paid" || state === "done") && "border-ok/25 bg-ok-soft/60",
         state === "skipped" && "opacity-80 border-border",
         state !== "paid" &&
           state !== "done" &&
@@ -332,7 +332,7 @@ function DealItem({
 
         <div className="flex shrink-0 flex-col items-end gap-2">
           {d.amount && (
-            <span className="whitespace-nowrap font-mono text-sm font-semibold text-emerald-700">
+            <span className="whitespace-nowrap font-mono text-sm font-semibold text-stone-800">
               {d.amount}
             </span>
           )}

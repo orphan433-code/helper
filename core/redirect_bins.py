@@ -1,4 +1,4 @@
-"""BIN редиректа: каталог банков + старый extra BIN. Едет через git pull."""
+"""BIN редиректа: каталог банков + группа «Уходят»."""
 
 from core.bank_bins import EXTRA_REDIRECT_BINS, all_catalog_bins, normalize_known_prefixes
 

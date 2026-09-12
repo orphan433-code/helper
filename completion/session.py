@@ -37,6 +37,7 @@ class SessionDeal:
     task_id: str = ""
     ledger: dict | None = None
     give_fiat: str = ""
+    extra_proofs: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -143,6 +144,11 @@ def build_session(
                 task_id=str(deal.task_id or accepted.fingerprint or ""),
                 ledger=dict(accepted.ledger) if accepted.ledger else None,
                 give_fiat=give_fiat,
+                extra_proofs=[
+                    str(p)
+                    for p in (getattr(accepted, "extra_proofs", None) or [])
+                    if str(p).strip()
+                ],
             )
         )
     return CompletionSession(

@@ -57,6 +57,7 @@ def execute_plan(api: Any, plan: ActionPlan) -> dict[str, Any]:
             ),
             visa_only=bool(plan.visa_only),
             mastercard_only=bool(plan.mastercard_only),
+            service=plan.service or None,
         )
 
     trader_ids = _resolve_trader_ids(plan)

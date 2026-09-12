@@ -20,23 +20,31 @@ def load_decline_config() -> dict[str, Any]:
     return dapi.load_config()
 
 
-async def acquire_token(cfg: dict[str, Any] | None = None) -> tuple[str, str, str]:
+async def acquire_token(
+    cfg: dict[str, Any] | None = None,
+    *,
+    service: str | None = None,
+    redirect: bool = False,
+) -> tuple[str, str, str]:
     """
-    Токен как у рабочего decline: env → browser profile.
+    Токен как у рабочего decline: кэш входа (eze_token / platcore_token).
     Preview всегда headless — без видимого Chrome.
     """
+    from core.host_session import service_from_url
+
     base_cfg = cfg or load_decline_config()
     preview_cfg = deepcopy(base_cfg)
     browser = dict(preview_cfg.get("browser") or {})
     browser["headless"] = True
     preview_cfg["browser"] = browser
 
-    base_url = dapi._api_base_url(preview_cfg)
-    decline = preview_cfg.get("bank_decline") or {}
-    if decline.get("token") or __import__("os").environ.get("PLATCORE_TOKEN"):
-        source = "env/config"
-    else:
-        source = "browser_profile"
+    base_url = dapi._api_base_url(
+        preview_cfg,
+        service=service,
+        redirect=redirect,
+    )
+    host = "EasySend" if service_from_url(base_url) == "eze" else "HZ"
+    source = f"cache {host}"
 
     token = await dapi.resolve_token(preview_cfg, base_url)
     return token, base_url, source

@@ -21,7 +21,7 @@ BANK_BINS: tuple[dict[str, Any], ...] = (
         "id": "liberty",
         "name": "Liberty Bank",
         "visa": ("412570", "412571"),
-        "mastercard": ("532434", "537524"),
+        "mastercard": ("532434",),
     },
     {
         "id": "tbc",
@@ -31,8 +31,8 @@ BANK_BINS: tuple[dict[str, Any], ...] = (
     },
 )
 
-# Старый redirect BIN вне справочника банков — оставляем в редиректе.
-EXTRA_REDIRECT_BINS: tuple[str, ...] = ("557755",)
+# 537524 / 557755 — отдельная группа редиректа «Уходят», не в отмене.
+EXTRA_REDIRECT_BINS: tuple[str, ...] = ("537524", "557755")
 
 
 def bank_row(bank_id: str) -> dict[str, Any] | None:

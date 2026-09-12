@@ -26,15 +26,21 @@ from ui.prompts import wait_user_confirm
 from core.validators import PanicError
 
 
-async def run_login() -> None:
+async def run_login(service: str | None = None) -> None:
     begin_job()
     await close_before_new_run()
     cfg = load_config()
-    # Вход всегда в видимом окне — даже если в config headless=true.
-    session = await launch_browser(cfg, headless=False)
-    dash_url = cfg["dashboard"]["monitor_url"]
+    from core.decline_hosts import DECLINE_SERVICE_EZE, DECLINE_SERVICE_URLS, normalize_decline_service
+    from core.host_session import pay_out_url, write_cached_token
 
-    section("Вход в PlatCore")
+    key = normalize_decline_service(service)
+    host = "EasySend" if key == DECLINE_SERVICE_EZE else "HZ"
+    # Вход всегда в видимом окне — даже если в config headless=true.
+    # page_zoom (0.4) только для DOM-списка; логин — 100%, API всё равно.
+    session = await launch_browser(cfg, headless=False, for_login=True, service=key)
+    dash_url = pay_out_url(key)
+
+    section(f"Вход {host}")
     info(f"Профиль: {session.profile.name}")
     info("Открыто видимое окно браузера — войди в аккаунт")
 
@@ -48,10 +54,24 @@ async def run_login() -> None:
         await page.bring_to_front()
         await page.goto(dash_url, wait_until="domcontentloaded")
         await wait_user_confirm(
-            "Войди в аккаунт в окне браузера и нажми «Я вошёл»"
+            f"Войди в {host} в окне браузера и нажми «Я вошёл»"
         )
         raise_if_stopped()
-        ok("Сессия PlatCore сохранена")
+        from platcore.api_client import capture_token_from_page, token_works
+
+        token = await capture_token_from_page(page)
+        base = DECLINE_SERVICE_URLS[key]
+        if token and token_works(base, token):
+            write_cached_token(token, service=key)
+            from core.host_session import invalidate_session_status
+
+            invalidate_session_status()
+            ok(f"Сессия {host} сохранена")
+        else:
+            warn(
+                f"Сессия {host}: токен не снялся. "
+                "Проверь что кабинет открыт и жми вход ещё раз"
+            )
     except JobStopped:
         info("Вход прерван")
     except asyncio.CancelledError:
@@ -61,7 +81,7 @@ async def run_login() -> None:
         await close_session(session, reason="login")
 
 
-async def run_pipeline() -> None:
+async def run_pipeline(service: str | None = None) -> None:
     begin_job()
     cfg = load_config()
     pipe_cfg = cfg.get("pipeline") or {}
@@ -69,6 +89,16 @@ async def run_pipeline() -> None:
     api_flow = cfg.get("api_flow") or {}
     api_enabled = bool(api_flow.get("enabled", False))
     from_pending = bool(pipe_cfg.get("from_pending", False))
+    from core.decline_hosts import DECLINE_SERVICE_EZE, normalize_decline_service
+    from core.deals_ui_local import pipeline_ui_service
+
+    eze = (
+        normalize_decline_service(service if service is not None else pipeline_ui_service())
+        == DECLINE_SERVICE_EZE
+    )
+    if eze:
+        from_pending = False
+        api_enabled = True
     http_only = api_enabled and not from_pending
     exit_after_run = bool(pipe_cfg.get("exit_after_run", True))
 
@@ -107,6 +137,13 @@ async def run_pipeline() -> None:
             accepted_deals, page_by_order = await claim_pending_deals_loop(
                 session.context, cfg
             )
+        elif eze:
+            from platcore.api_accept import accept_deals_loop_api
+
+            info("Режим: e.hz Accept как HZ, пул GEL (отдельный Chrome)")
+            accepted_deals, page_by_order = await accept_deals_loop_api(
+                cfg, service="eze"
+            )
         elif api_enabled:
             from platcore.api_accept import accept_deals_loop_api
 
@@ -128,7 +165,17 @@ async def run_pipeline() -> None:
         run_completion = comp_cfg.get("enabled", True) and pipe_cfg.get(
             "run_completion_after_batch", True
         )
-        if api_enabled and not api_flow.get("run_completion"):
+        if eze:
+            from core.deals_ui_local import pipeline_ui_dry_stop
+
+            if pipeline_ui_dry_stop():
+                run_completion = False
+                info("EZE: тест до SMS — чеки не грузим")
+            elif run_completion:
+                info("e.hz: чеки как HZ — overlay + банк")
+            else:
+                info("EZE: фаза чеков выключена")
+        elif api_enabled and not api_flow.get("run_completion"):
             run_completion = False
             info("API-флоу: закрытие не трогаем — сверка руками")
         if run_completion and accepted_deals:

@@ -43,13 +43,12 @@ export function BentoCard({
   return (
     <div
       className={cn(
-        "group relative col-span-3 flex flex-col justify-between overflow-hidden rounded-xl",
-        "bg-background [box-shadow:0_0_0_1px_rgba(0,0,0,.03),0_2px_4px_rgba(0,0,0,.05),0_12px_24px_rgba(0,0,0,.05)]",
-        "transform-gpu transition-colors",
-        muted && "opacity-55",
-        tone === "warn" && "ring-1 ring-amber-300/80 bg-amber-50/30",
-        tone === "ok" && "ring-1 ring-slate-300/90",
-        tone === "active" && "ring-1 ring-slate-400/50 bg-slate-50/80",
+        "group relative col-span-3 flex flex-col justify-between overflow-hidden rounded-2xl",
+        "bento-surface transform-gpu transition-shadow duration-300",
+        muted && "[&_h3]:text-foreground/45",
+        tone === "warn" && "ring-1 ring-amber-400/40",
+        tone === "ok" && "ring-1 ring-ok/25",
+        tone === "active" && "ring-1 ring-border",
         className,
       )}
       {...props}
@@ -63,14 +62,14 @@ export function BentoCard({
               <div className="flex items-center gap-2">
                 {badge}
                 {Icon && (
-                  <Icon className="size-5 text-neutral-600 transition-transform duration-300 group-hover:scale-90" />
+                  <Icon className="size-5 text-foreground/55 transition-transform duration-300 group-hover:scale-90" />
                 )}
                 {name && (
-                  <h3 className="text-base font-semibold text-neutral-800">{name}</h3>
+                  <h3 className="text-base font-semibold tracking-tight text-foreground">{name}</h3>
                 )}
               </div>
               {description && (
-                <p className="max-w-lg text-sm text-neutral-500">{description}</p>
+                <p className="max-w-lg text-xs text-foreground/55">{description}</p>
               )}
             </div>
             {cta && <div className="shrink-0">{cta}</div>}
@@ -79,7 +78,7 @@ export function BentoCard({
         <div className="relative z-10 flex min-h-0 flex-1 flex-col">{children}</div>
       </div>
 
-      <div className="pointer-events-none absolute inset-0 transform-gpu transition-all duration-300 group-hover:bg-black/[0.02]" />
+      <div className="pointer-events-none absolute inset-0 transform-gpu transition-all duration-300 group-hover:bg-foreground/[0.015]" />
     </div>
   );
 }

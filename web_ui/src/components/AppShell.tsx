@@ -5,7 +5,11 @@ import {
   Octagon,
   RefreshCw,
   Power,
+  ScrollText,
   Settings,
+  Sparkles,
+  Play,
+  ArrowLeftRight,
   Users,
 } from "lucide-react";
 import { TopBar } from "@/components/TopBar";
@@ -14,11 +18,11 @@ import { DealsView } from "@/components/DealsView";
 import { AgentView } from "@/components/AgentView";
 import { LogView } from "@/components/LogView";
 import { RecoveryDialog } from "@/components/RecoveryDialog";
+import { RatesConfirmDialog, DryStopDialog } from "@/components/RatesConfirmDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { BusyOverlay } from "@/components/BusyOverlay";
 import { ResultOverlay } from "@/components/ResultOverlay";
 import { SettingsBundleDialog } from "@/components/SettingsBundlePanel";
-import { LightRays } from "@/components/ui/light-rays";
 import { api, apiCall, serverPost } from "@/lib/api";
 import { useConsole } from "@/store/console";
 import { cn } from "@/lib/utils";
@@ -32,10 +36,12 @@ function NavDivider() {
 function NavTab({
   active,
   label,
+  icon: Icon,
   onClick,
 }: {
   active: boolean;
   label: string;
+  icon: typeof Play;
   onClick: () => void;
 }) {
   return (
@@ -43,12 +49,13 @@ function NavTab({
       type="button"
       onClick={onClick}
       className={cn(
-        "cursor-pointer rounded-xl px-3.5 py-2 text-sm font-medium transition-colors",
+        "flex cursor-pointer items-center gap-1.5 rounded-xl px-3 py-2 text-sm font-medium transition-colors",
         active
-          ? "bg-slate-900 text-white shadow-sm"
-          : "text-slate-600 hover:bg-slate-100 hover:text-slate-900",
+          ? "bg-primary text-primary-foreground shadow-sm"
+          : "text-foreground/55 hover:bg-foreground/[0.06] hover:text-foreground",
       )}
     >
+      <Icon className="size-3.5 opacity-80" />
       {label}
     </button>
   );
@@ -60,7 +67,7 @@ function ActionTip({
   children,
 }: {
   title: string;
-  description: string;
+  description?: string;
   children: ReactNode;
 }) {
   return (
@@ -68,10 +75,12 @@ function ActionTip({
       {children}
       <div
         role="tooltip"
-        className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 w-max max-w-[13rem] -translate-x-1/2 rounded-lg border border-border/80 bg-white px-2.5 py-2 text-left opacity-0 shadow-lg transition-opacity duration-150 group-hover/action:opacity-100"
+        className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 w-max max-w-[12rem] -translate-x-1/2 rounded-lg border border-border/40 bg-background/95 px-2.5 py-1.5 text-left opacity-0 shadow-xl backdrop-blur-xl transition-opacity duration-150 group-hover/action:opacity-100"
       >
         <p className="text-xs font-semibold text-foreground">{title}</p>
-        <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{description}</p>
+        {description && (
+          <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{description}</p>
+        )}
       </div>
     </div>
   );
@@ -87,7 +96,7 @@ function ActionBtn({
   children,
 }: {
   title: string;
-  description: string;
+  description?: string;
   disabled?: boolean;
   danger?: boolean;
   active?: boolean;
@@ -103,9 +112,9 @@ function ActionBtn({
         className={cn(
           "flex size-10 cursor-pointer items-center justify-center rounded-xl transition-colors",
           disabled && "cursor-not-allowed opacity-40",
-          danger && !disabled && "bg-red-50 text-red-600 hover:bg-red-100",
-          active && !danger && "bg-slate-900 text-white",
-          !danger && !active && !disabled && "text-slate-500 hover:bg-slate-100 hover:text-slate-900",
+          danger && !disabled && "bg-danger-soft text-danger hover:bg-rose-500/10",
+          active && !danger && "bg-primary text-primary-foreground",
+          !danger && !active && !disabled && "text-foreground/55 hover:bg-foreground/[0.06] hover:text-foreground",
         )}
       >
         {children}
@@ -115,32 +124,26 @@ function ActionBtn({
 }
 
 function GearMenuItem({
-  title,
-  description,
   disabled,
   onClick,
   children,
 }: {
-  title: string;
-  description: string;
   disabled?: boolean;
   onClick: () => void;
   children: ReactNode;
 }) {
   return (
-    <ActionTip title={title} description={description}>
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={onClick}
-        className={cn(
-          "flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition-colors",
-          disabled ? "cursor-not-allowed opacity-40" : "hover:bg-slate-100",
-        )}
-      >
-        {children}
-      </button>
-    </ActionTip>
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-foreground/80 transition-colors",
+        disabled ? "cursor-not-allowed opacity-40" : "hover:bg-foreground/[0.06]",
+      )}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -276,26 +279,20 @@ export function AppShell() {
     }
   };
 
-  const tabs: { id: ViewId; label: string }[] = [
-    { id: "run", label: "Запуск" },
-    { id: "deals", label: "Операции" },
-    { id: "agent", label: "AI команда" },
-    { id: "log", label: "Журнал" },
+  const tabs: { id: ViewId; label: string; icon: typeof Play }[] = [
+    { id: "run", label: "Запуск", icon: Play },
+    { id: "deals", label: "Операции", icon: ArrowLeftRight },
+    { id: "agent", label: "Команда", icon: Sparkles },
+    { id: "log", label: "Журнал", icon: ScrollText },
   ];
 
   return (
     <div className="relative min-h-screen">
-      <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
-        <LightRays
-          count={3}
-          color="rgba(148, 163, 184, 0.14)"
-          blur={24}
-          speed={28}
-          length="50vh"
-          className="opacity-80"
-        />
+      <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
+        <div className="absolute left-1/2 top-0 h-[520px] w-[520px] -translate-x-1/2 rounded-full bg-foreground/[0.035] blur-[140px]" />
+        <div className="absolute bottom-0 right-0 h-[360px] w-[360px] rounded-full bg-foreground/[0.025] blur-[120px]" />
+        <div className="absolute left-1/4 top-1/2 h-[400px] w-[400px] rounded-full bg-primary/[0.02] blur-[150px]" />
       </div>
-
       <div className="relative z-10 mx-auto max-w-6xl px-4 pb-28 pt-5">
         <TopBar />
 
@@ -308,15 +305,18 @@ export function AppShell() {
       <BusyOverlay />
       <ResultOverlay />
       <RecoveryDialog />
+      <RatesConfirmDialog />
+      <DryStopDialog />
       <ConfirmDialog />
       <SettingsBundleDialog open={bundleOpen} onOpenChange={setBundleOpen} />
 
       <nav className="fixed inset-x-0 bottom-5 z-40 flex justify-center px-4">
-        <div className="flex max-w-full flex-wrap items-center justify-center gap-1 rounded-2xl border border-border/80 bg-white/90 p-1.5 shadow-lg backdrop-blur-md">
-          {tabs.map(({ id, label }) => (
+        <div className="flex max-w-full flex-wrap items-center justify-center gap-1 rounded-2xl border border-border/40 bg-background/60 p-1.5 shadow-lg backdrop-blur-xl">
+          {tabs.map(({ id, label, icon }) => (
             <NavTab
               key={id}
               label={label}
+              icon={icon}
               active={view === id}
               onClick={() => setView(id)}
             />
@@ -327,7 +327,6 @@ export function AppShell() {
           <div className="relative">
             <ActionBtn
               title="Сервис"
-              description="Настройки команды, обновление, перезапуск и выключение."
               active={gearOpen}
               onClick={() => setGearOpen((v) => !v)}
             >
@@ -342,21 +341,17 @@ export function AppShell() {
                   className="fixed inset-0 z-40 cursor-default"
                   onClick={() => setGearOpen(false)}
                 />
-                <div className="absolute bottom-full left-1/2 z-50 mb-2 w-52 -translate-x-1/2 rounded-xl border border-border/80 bg-white p-1 shadow-lg">
+                <div className="absolute bottom-full left-1/2 z-50 mb-2 w-52 -translate-x-1/2 rounded-xl border border-border/40 bg-background/95 p-1 shadow-xl backdrop-blur-xl">
                   <GearMenuItem
-                    title="Настройки команды"
-                    description="Скачать или загрузить zip с team-настройками."
                     onClick={() => {
                       setGearOpen(false);
                       setBundleOpen(true);
                     }}
                   >
-                    <Users className="size-4 shrink-0 text-slate-500" />
-                    <span>Настройки команды</span>
+                    <Users className="size-4 shrink-0 text-foreground/55" />
+                    <span>Настройки</span>
                   </GearMenuItem>
                   <GearMenuItem
-                    title="Обновить код"
-                    description="Скачивает последнюю версию с GitHub. Конфиг не затирается."
                     disabled={updateBusy}
                     onClick={() => {
                       setGearOpen(false);
@@ -364,33 +359,29 @@ export function AppShell() {
                     }}
                   >
                     {updateBusy ? (
-                      <Loader2 className="size-4 shrink-0 animate-spin text-slate-500" />
+                      <Loader2 className="size-4 shrink-0 animate-spin text-foreground/55" />
                     ) : (
-                      <CloudDownload className="size-4 shrink-0 text-slate-500" />
+                      <CloudDownload className="size-4 shrink-0 text-foreground/55" />
                     )}
-                    <span>Обновить код</span>
+                    <span>Обновить</span>
                   </GearMenuItem>
                   <GearMenuItem
-                    title="Перезапустить"
-                    description="Перезапускает движок TJS без выключения сервера."
                     disabled={updateBusy}
                     onClick={() => {
                       setGearOpen(false);
                       void restart();
                     }}
                   >
-                    <RefreshCw className="size-4 shrink-0 text-slate-500" />
-                    <span>Перезапустить</span>
+                    <RefreshCw className="size-4 shrink-0 text-foreground/55" />
+                    <span>Перезапуск</span>
                   </GearMenuItem>
                   <GearMenuItem
-                    title="Выключить"
-                    description="Полностью останавливает сервер TJS."
                     onClick={() => {
                       setGearOpen(false);
                       void shutdown();
                     }}
                   >
-                    <Power className="size-4 shrink-0 text-slate-500" />
+                    <Power className="size-4 shrink-0 text-foreground/55" />
                     <span>Выключить</span>
                   </GearMenuItem>
                 </div>
@@ -400,15 +391,23 @@ export function AppShell() {
 
           <NavDivider />
 
-          <ActionBtn
-            title="Стоп"
-            description="Останавливает текущую задачу — редирект, отмену или переводы."
-            disabled={!running}
-            danger={running}
-            onClick={() => void stop()}
-          >
-            <Octagon className="size-4 fill-current" />
-          </ActionBtn>
+          <ActionTip title="Стоп">
+            <button
+              type="button"
+              disabled={!running}
+              onClick={() => void stop()}
+              className={cn(
+                "flex h-10 cursor-pointer items-center justify-center gap-1.5 rounded-xl px-3 text-sm font-semibold transition-colors",
+                running
+                  ? "bg-danger text-white hover:brightness-95"
+                  : "text-foreground/40",
+                !running && "cursor-not-allowed opacity-40",
+              )}
+            >
+              <Octagon className="size-4 fill-current" />
+              {running && "Стоп"}
+            </button>
+          </ActionTip>
         </div>
       </nav>
     </div>

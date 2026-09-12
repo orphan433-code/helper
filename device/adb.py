@@ -90,6 +90,117 @@ def _list_ready_serials() -> list[str]:
     return out
 
 
+def _parse_mdns_connect_targets(stdout: str) -> list[str]:
+    """Из `adb mdns services` → host:port для _adb-tls-connect._tcp."""
+    targets: list[str] = []
+    seen: set[str] = set()
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line or line.lower().startswith("list of"):
+            continue
+        # name \t service \t host:port
+        parts = line.replace("  ", "\t").split("\t")
+        parts = [p.strip() for p in parts if p.strip()]
+        if len(parts) < 3:
+            parts = line.split()
+        if len(parts) < 3:
+            continue
+        service = parts[1]
+        endpoint = parts[2]
+        if "_adb-tls-connect" not in service and "_adb._tcp" not in service:
+            continue
+        if ":" not in endpoint:
+            continue
+        if endpoint not in seen:
+            seen.add(endpoint)
+            targets.append(endpoint)
+    return targets
+
+
+def discover_wifi_adb_targets() -> list[str]:
+    """mDNS: телефоны с Wireless debugging (connect port)."""
+    proc = subprocess.run(
+        [adb_bin(), "mdns", "services"],
+        capture_output=True,
+        check=False,
+        timeout=8,
+    )
+    text = (proc.stdout or b"").decode(errors="replace")
+    return _parse_mdns_connect_targets(text)
+
+
+def adb_connect(target: str, *, timeout_sec: float = 8.0) -> tuple[bool, str]:
+    """`adb connect host:port` → (ok, message)."""
+    target = (target or "").strip()
+    if not target:
+        return False, "пустой target"
+    proc = subprocess.run(
+        [adb_bin(), "connect", target],
+        capture_output=True,
+        check=False,
+        timeout=timeout_sec,
+    )
+    out = ((proc.stdout or b"") + (proc.stderr or b"")).decode(errors="replace").strip()
+    low = out.lower()
+    ok = proc.returncode == 0 and (
+        "connected to" in low or "already connected" in low
+    )
+    return ok, out or f"exit {proc.returncode}"
+
+
+def try_auto_connect_wifi() -> tuple[str | None, str]:
+    """
+    Если в `adb devices` пусто — connect по mDNS (_adb-tls-connect).
+
+    Android 11+ Wireless debugging: сначала один раз
+    «Пара устройств» → `adb pair IP:PORT` + код, потом connect.
+    """
+    ready = _list_ready_serials()
+    if ready:
+        return ready[0], "уже в adb devices"
+
+    cfg_serial = _bank_cfg().get("adb_serial")
+    if cfg_serial:
+        target = str(cfg_serial).strip()
+        if _is_network_serial(target):
+            ok, msg = adb_connect(target)
+            if ok:
+                invalidate_serial_cache()
+                return target, f"connect {target}: {msg}"
+            return None, (
+                f"adb connect {target} не вышел: {msg}. "
+                "Открой на телефоне «Пара устройств по коду» → "
+                "`adb pair IP:PORT` (код с экрана), потом снова Проверить"
+            )
+
+    targets = discover_wifi_adb_targets()
+    if not targets:
+        return None, (
+            "Wi‑Fi adb в mDNS нет. Включи «Беспроводная отладка», "
+            "тот же Wi‑Fi / хотспот, что Mac"
+        )
+
+    last_msg = ""
+    for target in targets:
+        ok, msg = adb_connect(target)
+        last_msg = msg
+        if ok:
+            invalidate_serial_cache()
+            # после connect serial может быть IP:port или adb-XXXX
+            ready = _list_ready_serials()
+            serial = next(
+                (s for s in ready if _is_network_serial(s)),
+                ready[0] if ready else target,
+            )
+            return serial, f"mDNS connect {target}: {msg}"
+
+    return None, (
+        f"Телефон виден в Wi‑Fi ({', '.join(targets)}), но connect отказал"
+        f" ({last_msg}). Нужна пара: на телефоне «Пара устройств по коду pairing» "
+        "→ в терминале `adb pair IP:PORT` + 6 цифр → потом Проверить снова"
+    )
+
+
 def pick_serial(explicit: str | None = None) -> str | None:
     global _cached_serial, _cached_serial_set
     if explicit:
@@ -164,9 +275,10 @@ def run_adb(
 
 
 def require_device() -> str | None:
-    """Найти готовое устройство; при сбое сбросить кэш и повторить один раз."""
+    """Найти готовое устройство; Wi‑Fi — авто connect по mDNS при пустом devices."""
     last_err = ""
-    for _ in range(2):
+    wifi_hint = ""
+    for attempt in range(2):
         serial = pick_serial()
         proc = run_adb(["get-state"], serial=serial, check=False)
         if proc.returncode == 0:
@@ -178,9 +290,20 @@ def require_device() -> str | None:
             err = (proc.stderr or b"").decode(errors="replace").strip()
             last_err = err or f"exit {proc.returncode}"
         invalidate_serial_cache()
+        if attempt == 0:
+            try:
+                connected, wifi_hint = try_auto_connect_wifi()
+            except Exception as exc:
+                wifi_hint = str(exc)
+                connected = None
+            if connected:
+                continue
     hint = f" ({last_err})" if last_err else ""
+    extra = f" | {wifi_hint}" if wifi_hint else ""
     raise RuntimeError(
-        "adb не видит телефон. USB / Wi‑Fi debugging, `adb devices`" + hint
+        "adb не видит телефон. USB / Wi‑Fi debugging, `adb devices`"
+        + hint
+        + extra
     )
 
 

@@ -13,13 +13,19 @@ type Api = {
     max_empty_list_passes: number,
     from_pending: boolean,
     pipeline_bin_prefixes?: string[],
+    currencies?: string[],
   ) => Promise<Record<string, unknown>>;
-  save_redirect_filters: (
+    save_redirect_filters: (
     skip_bog: boolean,
     visa_only: boolean,
     max_remaining: boolean,
     redirect_prefixes?: string[],
   ) => Promise<Record<string, unknown>>;
+  save_decline_service: (service: string) => Promise<Record<string, unknown>>;
+  save_pipeline_service: (service: string) => Promise<Record<string, unknown>>;
+  save_pipeline_dry_stop: (enabled: boolean) => Promise<Record<string, unknown>>;
+  save_pipeline_skip_tbc: (enabled: boolean) => Promise<Record<string, unknown>>;
+  save_pipeline_skip_bog: (enabled: boolean) => Promise<Record<string, unknown>>;
   start_pipeline: (
     max_deals: number,
     min_amount: string,
@@ -29,8 +35,10 @@ type Api = {
     max_empty_list_passes: number,
     from_pending: boolean,
     pipeline_bin_prefixes?: string[],
+    currencies?: string[],
+    service?: string,
   ) => Promise<Record<string, unknown>>;
-  start_login: () => Promise<Record<string, unknown>>;
+  start_login: (service?: string) => Promise<Record<string, unknown>>;
   start_accept_names: (
     max_deals: number,
     min_amount?: string | number | null,
@@ -53,6 +61,8 @@ type Api = {
     max_per_run?: number,
     min_amount?: string | number | null,
     max_amount?: string | number | null,
+    mastercard_only?: boolean,
+    service?: string,
   ) => Promise<Record<string, unknown>>;
   start_redirect: (
     trader_ids: string[],
@@ -84,6 +94,7 @@ declare global {
     appendCancelAlert?: (payload: Record<string, unknown>) => void;
     clearCancelAlerts?: () => void;
     setConfirmPrompt?: (prompt: string, mode: string) => void;
+    hideConfirmPrompt?: () => void;
     setRecoveryPrompt?: (
       message: string,
       detail: string,

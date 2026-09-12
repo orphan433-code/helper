@@ -65,7 +65,13 @@ def _resolve_traders(plan: ActionPlan, cfg: dict) -> list[tuple[str, str]]:
 async def preview_plan(plan: ActionPlan) -> dict[str, Any]:
     cfg = load_decline_config()
     agent_trace(f"preview: action={plan.action} max={plan.max_per_run}")
-    token, base_url, token_source = await acquire_token(cfg)
+    is_redirect = plan.action == "redirect"
+    raw_svc = str(plan.service or "").strip() if not is_redirect else None
+    token, base_url, token_source = await acquire_token(
+        cfg,
+        service=raw_svc or None,
+        redirect=is_redirect,
+    )
     agent_trace(f"preview: token from {token_source}, api={base_url}")
     status = str(plan.deal_status or "new").strip().lower() or "new"
 

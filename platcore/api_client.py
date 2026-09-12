@@ -6,6 +6,7 @@ import json
 import mimetypes
 import os
 import re
+import time
 import uuid
 import urllib.error
 import urllib.request
@@ -14,12 +15,19 @@ from typing import Any
 from urllib.parse import urlparse
 
 from core.logkit import info, warn
-from core.paths import ROOT, RUNTIME_DIR
 from core.validators import PanicError
+from core.host_session import (
+    jwt_host_needles,
+    profile_dir,
+    read_cached_token,
+    service_from_url,
+    write_cached_token,
+)
 
 _FIND_NEW_TYPE = "buyAll"
 _FIND_NEW_LIMIT = 100
-_TOKEN_CACHE = RUNTIME_DIR / "platcore_token.txt"
+_HTTP_TIMEOUT_SEC = 60
+_HTTP_RETRIES = 3
 _JWT_RE = re.compile(
     r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"
 )
@@ -65,16 +73,12 @@ def _strip_bearer(raw: str) -> str:
     return text
 
 
-def _profile_dir(cfg: dict):
-    from pathlib import Path
-
-    raw = str((cfg.get("browser") or {}).get("user_data_dir") or "../CNY/browser_profile")
-    return (ROOT / raw).resolve() if not Path(raw).is_absolute() else Path(raw)
+def _profile_dir(cfg: dict, *, base_url: str = ""):
+    return profile_dir(cfg, service=service_from_url(base_url))
 
 
-def _save_token(token: str) -> None:
-    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-    _TOKEN_CACHE.write_text(token, encoding="utf-8")
+def _save_token(token: str, *, service: str = "hz") -> None:
+    write_cached_token(token, service=service)
 
 
 def _token_from_env_cfg(cfg: dict) -> str | None:
@@ -90,31 +94,32 @@ def _token_from_env_cfg(cfg: dict) -> str | None:
     return None
 
 
-def _token_from_cache() -> str | None:
-    if not _TOKEN_CACHE.is_file():
-        return None
-    text = _TOKEN_CACHE.read_text(encoding="utf-8").strip()
-    return _strip_bearer(text) if text else None
+def _token_from_cache(service: str = "hz") -> str | None:
+    return read_cached_token(service)
 
 
-def _jwts_from_hz_blob(data: bytes) -> list[str]:
-    """JWT только рядом с hz.temkitemki — не любой токен из Chrome."""
+def _jwts_from_host_blob(data: bytes, *, marker: str) -> list[str]:
+    """JWT только рядом с хостом профиля — не любой токен из Chrome."""
     found: list[str] = []
+    needles = [n.lower() for n in (marker or "").split("|") if n.strip()]
+    if not needles:
+        return []
     for enc in ("utf-8", "utf-16-le"):
         try:
             text = data.decode(enc, errors="ignore")
         except Exception:
             continue
-        if "temkitemki" not in text.lower():
+        hay = text.lower()
+        if not any(n in hay for n in needles):
             continue
         found.extend(_JWT_RE.findall(text))
-    # длинный обычно access, короткий — мусор
     uniq = sorted(set(found), key=len, reverse=True)
     return uniq
 
 
-def _tokens_from_profile_disk(cfg: dict) -> list[str]:
-    profile = _profile_dir(cfg)
+def _tokens_from_profile_disk(cfg: dict, *, service: str = "hz") -> list[str]:
+    profile = profile_dir(cfg, service=service)
+    marker = "|".join(jwt_host_needles(service))
     dirs = [
         profile / "Default" / "Local Storage" / "leveldb",
         profile / "Default" / "Session Storage",
@@ -134,19 +139,43 @@ def _tokens_from_profile_disk(cfg: dict) -> list[str]:
                 data = path.read_bytes()
             except OSError:
                 continue
-            for tok in _jwts_from_hz_blob(data):
+            for tok in _jwts_from_host_blob(data, marker=marker):
                 if tok not in seen:
                     seen.add(tok)
                     out.append(tok)
     return out
 
 
+_READ_TOKEN_JS = """() => {
+    const keys = %s;
+    for (const k of keys) {
+        const v = localStorage.getItem(k) || sessionStorage.getItem(k);
+        if (v && v.length > 20) return v;
+    }
+    for (const store of [localStorage, sessionStorage]) {
+        for (let i = 0; i < store.length; i++) {
+            const k = store.key(i);
+            const v = store.getItem(k);
+            if (!v || v.length < 40) continue;
+            if (v.split('.').length === 3) return v;
+        }
+    }
+    return null;
+}"""
+
+
+async def capture_token_from_page(page: Any) -> str | None:
+    raw = await page.evaluate(_READ_TOKEN_JS % json.dumps(list(_TOKEN_KEYS)))
+    if not raw:
+        return None
+    return _strip_bearer(str(raw))
+
+
 async def _token_from_headless(cfg: dict, base_url: str) -> str | None:
     """Как редирект: headless на секунду, localStorage, закрыть."""
     from playwright.async_api import async_playwright
 
-    profile = _profile_dir(cfg)
-    keys_json = json.dumps(list(_TOKEN_KEYS))
+    profile = _profile_dir(cfg, base_url=base_url)
     async with async_playwright() as playwright:
         context = await playwright.chromium.launch_persistent_context(
             user_data_dir=str(profile),
@@ -162,25 +191,7 @@ async def _token_from_headless(cfg: dict, base_url: str) -> str | None:
                 timeout=60_000,
             )
             await page.wait_for_timeout(1200)
-            token = await page.evaluate(
-                f"""() => {{
-                    const keys = {keys_json};
-                    for (const k of keys) {{
-                        const v = localStorage.getItem(k) || sessionStorage.getItem(k);
-                        if (v && v.length > 20) return v;
-                    }}
-                    for (const store of [localStorage, sessionStorage]) {{
-                        for (let i = 0; i < store.length; i++) {{
-                            const k = store.key(i);
-                            const v = store.getItem(k);
-                            if (!v || v.length < 40) continue;
-                            if (v.split('.').length === 3) return v;
-                        }}
-                    }}
-                    return null;
-                }}"""
-            )
-            return _strip_bearer(token) if token else None
+            return await capture_token_from_page(page)
         finally:
             await context.close()
 
@@ -192,23 +203,30 @@ async def prime_hz_ledger(
     token: str,
     order_id: str,
 ) -> bool:
-    """Видимый Chrome, тот же browser_profile: сделка → Approve → hz-calc POST."""
+    """Chrome (headless из config): сделка → Approve → hz-calc POST.
+
+    Approve часто ещё disabled после goto — ждём + reload-ретраи.
+    """
     from core.human import parse_human_timing
     from platcore.completion import ensure_completion_deal_ready
     from playwright.async_api import async_playwright
 
-    profile = _profile_dir(cfg)
+    profile = _profile_dir(cfg, base_url=base_url)
+    browser_cfg = cfg.get("browser") or {}
+    headless = bool(browser_cfg.get("headless", False))
     url = f"{base_url}/pay-out?limit=100&status=pending&dealId={deal_id}"
-    info(f"hz-calc: открываю окно {order_id} (профиль {profile.name})")
+    mode = "headless" if headless else "окно"
+    info(f"hz-calc: открываю {mode} {order_id} (профиль {profile.name})")
     posted = False
     keys_json = json.dumps(list(_TOKEN_KEYS))
     timing = parse_human_timing(cfg)
-    zoom = (cfg.get("browser") or {}).get("page_zoom")
+    zoom = browser_cfg.get("page_zoom")
+    prime_attempts = 4
     async with async_playwright() as playwright:
         try:
             context = await playwright.chromium.launch_persistent_context(
                 user_data_dir=str(profile),
-                headless=False,
+                headless=headless,
                 viewport={"width": 1400, "height": 900},
                 locale="ru-RU",
             )
@@ -236,40 +254,71 @@ async def prime_hz_ledger(
                     }}
                 }}"""
             )
-            try:
-                await page.bring_to_front()
-            except Exception:
-                pass
-            await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-            if zoom:
+            if not headless:
                 try:
-                    await page.evaluate(f"() => {{ document.body.style.zoom = '{zoom}'; }}")
+                    await page.bring_to_front()
                 except Exception:
                     pass
-            try:
-                # Как ретрай чеков: goto dealId → Order info → Approve
-                await page.wait_for_timeout(1000)
-                await ensure_completion_deal_ready(page, timing=timing)
-                info("hz-calc: Approve как на ретрае чеков")
-            except Exception as exc:
-                warn(f"hz-calc: Approve не нажат ({exc})")
-            try:
-                await page.wait_for_selector("#hz-calc", timeout=20_000)
-                info("hz-calc: виджет на странице")
-            except Exception:
-                warn(f"hz-calc: #hz-calc нет, url={page.url}")
-            for _ in range(80):
-                if posted:
+
+            for attempt in range(1, prime_attempts + 1):
+                posted = False
+                await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+                if zoom:
+                    try:
+                        await page.evaluate(
+                            f"() => {{ document.body.style.zoom = '{zoom}'; }}"
+                        )
+                    except Exception:
+                        pass
+                try:
+                    await ensure_completion_deal_ready(
+                        page,
+                        timing=timing,
+                        attempts=3,
+                        approve_timeout_sec=10.0,
+                        need_dropzone=False,
+                    )
+                    info(
+                        f"hz-calc: Approve ок"
+                        + (f" (попытка {attempt})" if attempt > 1 else "")
+                    )
+                except Exception as exc:
+                    warn(
+                        f"hz-calc: Approve не нажат "
+                        f"({attempt}/{prime_attempts}: {exc})"
+                    )
+                    if attempt < prime_attempts:
+                        await page.wait_for_timeout(400)
+                        continue
                     break
-                await page.wait_for_timeout(250)
-            if posted:
-                await page.wait_for_timeout(1500)
+
+                try:
+                    await page.wait_for_selector("#hz-calc", timeout=15_000)
+                    info("hz-calc: виджет на странице")
+                except Exception:
+                    warn(f"hz-calc: #hz-calc нет, url={page.url}")
+
+                for _ in range(60):
+                    if posted:
+                        break
+                    await page.wait_for_timeout(200)
+
+                if posted:
+                    await page.wait_for_timeout(800)
+                    break
+
+                warn(
+                    f"hz-calc: POST не ушёл "
+                    f"({attempt}/{prime_attempts}) — ещё раз"
+                )
+                if attempt < prime_attempts:
+                    await page.wait_for_timeout(400)
         finally:
             await context.close()
     if posted:
         info("hz-calc: POST /_hz/ledger ушёл")
     else:
-        warn("hz-calc: POST не ушёл — смотри окно, что на экране")
+        warn("hz-calc: POST не ушёл после ретраев")
     return posted
 
 
@@ -278,24 +327,29 @@ def token_works(base_url: str, token: str) -> bool:
         f"{base_url}/api/deals/findNew?page=1&limit=1"
         f"&status=new&type={_FIND_NEW_TYPE}"
     )
-    code, data = http_json("GET", url, token)
+    try:
+        code, data = http_json("GET", url, token)
+    except PanicError:
+        return False
     return code == 200 and isinstance(data, dict)
 
 
 async def resolve_token(cfg: dict, base_url: str) -> str:
     """Как редирект: токен → проверка findNew. Headless только если кэш мёртвый."""
+    service = service_from_url(base_url)
     ordered: list[tuple[str, str]] = []
-    env = _token_from_env_cfg(cfg)
-    if env:
-        ordered.append(("env", env))
-    cached = _token_from_cache()
+    if service != "eze":
+        env = _token_from_env_cfg(cfg)
+        if env:
+            ordered.append(("env", env))
+    cached = _token_from_cache(service)
     if cached:
         ordered.append(("cache", cached))
 
     def _try(source: str, token: str) -> bool:
         if token_works(base_url, token):
             info(f"Токен ок ({source})")
-            _save_token(token)
+            _save_token(token, service=service)
             return True
         info(f"Токен {source} не принят")
         return False
@@ -311,16 +365,59 @@ async def resolve_token(cfg: dict, base_url: str) -> str:
         headless = None
     if headless and _try("headless", headless):
         return headless
-    for disk in _tokens_from_profile_disk(cfg):
+    for disk in _tokens_from_profile_disk(cfg, service=service):
         if _try("disk", disk):
             return disk
-    if _TOKEN_CACHE.is_file():
-        _TOKEN_CACHE.unlink()
+    host = "EasySend" if service == "eze" else "HZ"
     raise PanicError(
-        "findNew 401: токен не подошёл. "
-        "Закрой Chrome с профилем CNY и жми цикл ещё раз "
-        "(снимем токен как редирект) или задай PLATCORE_TOKEN."
+        f"Нет сессии {host}. "
+        f"Жми «Вход {host}» в UI, войди в кабинет и нажми «Я вошёл»."
     )
+
+
+def retryable_http_exc(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in (502, 503, 504)
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        if isinstance(reason, TimeoutError):
+            return True
+        text = str(reason or exc).lower()
+        return "timed out" in text or "timeout" in text
+    text = str(exc).lower()
+    return "timed out" in text or "timeout" in text
+
+
+def urlopen_read(
+    req: urllib.request.Request,
+    *,
+    timeout: float = _HTTP_TIMEOUT_SEC,
+    retries: int = _HTTP_RETRIES,
+) -> tuple[int, bytes]:
+    """urlopen + read. Таймаут/502–504 — повтор; иначе TimeoutError / HTTPError."""
+    last: BaseException | None = None
+    attempts = max(1, int(retries))
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return int(resp.status), resp.read() or b""
+        except urllib.error.HTTPError as exc:
+            last = exc
+            if retryable_http_exc(exc) and attempt < attempts:
+                warn(f"HTTP {exc.code} — повтор {attempt}/{attempts}")
+                time.sleep(attempt)
+                continue
+            raise
+        except (TimeoutError, urllib.error.URLError, OSError) as exc:
+            last = exc
+            if retryable_http_exc(exc) and attempt < attempts:
+                warn(f"таймаут — повтор {attempt}/{attempts}")
+                time.sleep(attempt)
+                continue
+            raise TimeoutError(f"сервер не ответил за {timeout:g} с") from exc
+    raise TimeoutError(f"сервер не ответил за {timeout:g} с") from last
 
 
 def http_json(
@@ -347,11 +444,10 @@ def http_json(
         headers=headers,
     )
     try:
-        with urllib.request.urlopen(req, timeout=45) as resp:
-            raw = resp.read()
-            if not raw:
-                return resp.status, None
-            return resp.status, json.loads(raw.decode("utf-8"))
+        status, raw = urlopen_read(req)
+        if not raw:
+            return status, None
+        return status, json.loads(raw.decode("utf-8"))
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
         try:
@@ -359,6 +455,8 @@ def http_json(
         except json.JSONDecodeError:
             detail = raw
         return exc.code, detail
+    except TimeoutError as exc:
+        raise PanicError(f"{method} {url}: {exc}") from exc
 
 
 def fetch_find_new(
@@ -523,10 +621,10 @@ def put_upload(
     }
     req = urllib.request.Request(url, data=payload, method="PUT", headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
-            raw = resp.read()
-            code = resp.status
-            body: Any = json.loads(raw.decode("utf-8")) if raw else None
+        code, raw = urlopen_read(req, timeout=180)
+        body: Any = json.loads(raw.decode("utf-8")) if raw else None
+    except TimeoutError as exc:
+        raise PanicError(f"PUT /upload: {exc}") from exc
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
         try:

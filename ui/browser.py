@@ -267,6 +267,11 @@ def create_app() -> Any:
         "check_adb",
         "save_settings",
         "save_redirect_filters",
+        "save_decline_service",
+        "save_pipeline_service",
+        "save_pipeline_dry_stop",
+        "save_pipeline_skip_tbc",
+        "save_pipeline_skip_bog",
         "open_screens_folder",
         "open_videos_folder",
         "get_update_status",
@@ -433,6 +438,7 @@ def create_app() -> Any:
             max_empty_list_passes=body.get("max_empty_list_passes"),
             from_pending=body.get("from_pending", False),
             pipeline_bin_prefixes=body.get("pipeline_bin_prefixes"),
+            currencies=body.get("currencies"),
         )
 
     @app.post("/api/save_redirect_filters")
@@ -446,8 +452,12 @@ def create_app() -> Any:
         )
 
     @app.post("/api/start_login")
-    async def start_login() -> Any:
-        return await _call("start_login")
+    async def start_login(body: dict[str, Any] | None = None) -> Any:
+        body = body or {}
+        return await _call(
+            "start_login",
+            service=body.get("service", "hz"),
+        )
 
     @app.post("/api/start_pipeline")
     async def start_pipeline(body: dict[str, Any]) -> Any:
@@ -461,6 +471,8 @@ def create_app() -> Any:
             max_empty_list_passes=body.get("max_empty_list_passes"),
             from_pending=body.get("from_pending"),
             pipeline_bin_prefixes=body.get("pipeline_bin_prefixes"),
+            currencies=body.get("currencies"),
+            service=body.get("service"),
         )
 
     @app.post("/api/start_accept_names")
@@ -483,7 +495,9 @@ def create_app() -> Any:
             max_per_run=body.get("max_per_run"),
             min_amount=body.get("min_amount"),
             max_amount=body.get("max_amount"),
+            mastercard_only=body.get("mastercard_only", False),
             bank=body.get("bank"),
+            service=body.get("service"),
         )
 
     @app.post("/api/start_redirect")
@@ -499,6 +513,46 @@ def create_app() -> Any:
             visa_only=body.get("visa_only", False),
             max_remaining=body.get("max_remaining", False),
             redirect_prefixes=body.get("redirect_prefixes"),
+        )
+
+    @app.post("/api/save_decline_service")
+    async def save_decline_service(body: dict[str, Any] | None = None) -> Any:
+        body = body or {}
+        return await _call(
+            "save_decline_service",
+            service=body.get("service", "hz"),
+        )
+
+    @app.post("/api/save_pipeline_service")
+    async def save_pipeline_service(body: dict[str, Any] | None = None) -> Any:
+        body = body or {}
+        return await _call(
+            "save_pipeline_service",
+            service=body.get("service", "hz"),
+        )
+
+    @app.post("/api/save_pipeline_dry_stop")
+    async def save_pipeline_dry_stop(body: dict[str, Any] | None = None) -> Any:
+        body = body or {}
+        return await _call(
+            "save_pipeline_dry_stop",
+            enabled=bool(body.get("enabled", False)),
+        )
+
+    @app.post("/api/save_pipeline_skip_tbc")
+    async def save_pipeline_skip_tbc(body: dict[str, Any] | None = None) -> Any:
+        body = body or {}
+        return await _call(
+            "save_pipeline_skip_tbc",
+            enabled=bool(body.get("enabled", True)),
+        )
+
+    @app.post("/api/save_pipeline_skip_bog")
+    async def save_pipeline_skip_bog(body: dict[str, Any] | None = None) -> Any:
+        body = body or {}
+        return await _call(
+            "save_pipeline_skip_bog",
+            enabled=bool(body.get("enabled", True)),
         )
 
     @app.post("/api/agent/parse")

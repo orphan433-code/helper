@@ -48,6 +48,7 @@ class ActionPlan:
     use_ui_defaults: bool = False
     confidence: float = 0.0
     explanation: str = ""
+    service: str = ""
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> ActionPlan:
@@ -116,6 +117,7 @@ class ActionPlan:
             use_ui_defaults=bool(raw.get("use_ui_defaults", False)),
             confidence=float(raw.get("confidence") or 0.0),
             explanation=str(raw.get("explanation") or "").strip(),
+            service=str(raw.get("service") or "").strip().lower(),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -132,6 +134,8 @@ class ActionPlan:
         """AI-команда: аккаунты редиректа всегда из UI «Куда». Запрос не меняет."""
         out = ActionPlan.from_dict(self.to_dict())
         out.use_ui_defaults = False
+        if not out.service:
+            out.service = str(ctx.get("decline_service") or "").strip().lower()
         if out.action != "redirect":
             return out
         ids = [
@@ -217,6 +221,8 @@ class ActionPlan:
             lines.append("Только Mastercard")
         if self.skip_bog:
             lines.append("Без BoG")
+        if self.action == "decline" and self.service:
+            lines.append(f"Сервис: {self.service.upper()}")
         return "\n".join(lines)
 
     def validate(self) -> str | None:
