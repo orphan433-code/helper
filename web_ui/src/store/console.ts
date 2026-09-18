@@ -268,6 +268,8 @@ type ConsoleState = {
   adbOk: boolean;
   loginHzOk: boolean;
   loginEzeOk: boolean;
+  loginHzChecking: boolean;
+  loginEzeChecking: boolean;
   loginTarget: "hz" | "eze";
   settings: Settings;
   pipeline: ProgressPanel;
@@ -338,6 +340,8 @@ export const useConsole = create<ConsoleState>((set, get) => ({
   adbOk: false,
   loginHzOk: false,
   loginEzeOk: false,
+  loginHzChecking: true,
+  loginEzeChecking: true,
   loginTarget: "hz",
   settings: {
     maxDeals: 5,
@@ -626,6 +630,12 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     }
     if (has("login_eze_ok")) {
       patch.loginEzeOk = !!state.login_eze_ok;
+    }
+    if (has("login_hz_checking")) {
+      patch.loginHzChecking = !!state.login_hz_checking;
+    }
+    if (has("login_eze_checking")) {
+      patch.loginEzeChecking = !!state.login_eze_checking;
     }
     if (has("login_target")) {
       patch.loginTarget =

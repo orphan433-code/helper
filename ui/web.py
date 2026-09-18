@@ -18,8 +18,18 @@ from completion.registry import proofs_dir, videos_dir
 from core.logkit import make_event, set_ui_sink
 from core.config import bank_settings, load_config
 from core.decline_bins import DECLINE_BIN_PREFIXES, clamp_decline_limit
-from core.decline_hosts import normalize_decline_service
-from core.host_session import session_status_payload, session_status_snapshot, session_status_stale
+from core.decline_hosts import (
+    DECLINE_SERVICE_EZE,
+    DECLINE_SERVICE_HZ,
+    normalize_decline_service,
+)
+from core.host_session import (
+    session_status_payload,
+    session_status_snapshot,
+    session_status_stale,
+    session_unprobed,
+    set_session_checking,
+)
 from core.redirect_bins import REDIRECT_BIN_PREFIXES
 from core.redirect_rules import REDIRECT_MAX_REMAINING_HOURS
 from core.ensure_configs import ensure_local_configs
@@ -447,17 +457,50 @@ class TzkApi:
         if self._session_refreshing:
             return
         self._session_refreshing = True
+        first = session_unprobed()
+        if first:
+            set_session_checking(None, True)
+            self._push_session_status()
 
         def _run() -> None:
             try:
                 payload = session_status_payload(force=True)
-                self._notify_ui(f"applyState({json.dumps(payload)});")
+                dead: list[str] = []
+                if not payload.get("login_hz_ok"):
+                    dead.append(DECLINE_SERVICE_HZ)
+                else:
+                    set_session_checking(DECLINE_SERVICE_HZ, False)
+                if not payload.get("login_eze_ok"):
+                    dead.append(DECLINE_SERVICE_EZE)
+                else:
+                    set_session_checking(DECLINE_SERVICE_EZE, False)
+                self._push_session_status()
+                if dead and not self._running:
+                    cfg = load_config()
+                    asyncio.run(self._restore_dead_sessions(cfg, dead))
+                    session_status_payload(force=True)
             except Exception:
                 pass
             finally:
+                set_session_checking(None, False)
                 self._session_refreshing = False
+                self._push_session_status()
 
         threading.Thread(target=_run, daemon=True, name="session-status").start()
+
+    async def _restore_dead_sessions(self, cfg: dict, dead: list[str]) -> None:
+        from platcore.api_client import probe_and_restore_token
+
+        for key in dead:
+            if self._running:
+                break
+            try:
+                await probe_and_restore_token(cfg, key)
+            except Exception:
+                pass
+            set_session_checking(key, False)
+            session_status_payload(force=True)
+            self._push_session_status()
 
     def poll_logs(self) -> list[dict[str, Any]]:
         """Структурированные события журнала (для interactive logs table)."""
@@ -1842,9 +1885,10 @@ class TzkApi:
             except Exception:
                 pass
             if mode == "login":
-                self._push_session_status(force=False)
+                self._set_running(False)
                 self._kick_session_refresh()
-            self._set_running(False)
+            else:
+                self._set_running(False)
             self._notify_ui("hideRecoveryPrompt();")
 
     def _start_worker(

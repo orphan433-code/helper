@@ -76,21 +76,20 @@ class HostSessionTests(unittest.TestCase):
         self.assertFalse(payload["login_eze_ok"])
         write.assert_not_called()
 
-    def test_snapshot_uses_files_when_no_probe(self) -> None:
+    def test_snapshot_unknown_until_probe(self) -> None:
         from unittest.mock import patch
 
         from core import host_session as hs
 
         hs.invalidate_session_status()
-        with patch.object(
-            hs,
-            "read_cached_token",
-            side_effect=lambda s: "x" if s == "eze" else None,
-        ):
-            snap = hs.session_status_snapshot()
+        hs.set_session_checking(None, False)
+        snap = hs.session_status_snapshot()
         self.assertFalse(snap["login_hz_ok"])
-        self.assertTrue(snap["login_eze_ok"])
+        self.assertFalse(snap["login_eze_ok"])
+        self.assertTrue(snap["login_hz_checking"])
+        self.assertTrue(snap["login_eze_checking"])
         self.assertTrue(hs.session_status_stale())
+        self.assertTrue(hs.session_unprobed())
 
 
 class ResolveTokenCacheTests(unittest.IsolatedAsyncioTestCase):

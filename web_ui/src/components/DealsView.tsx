@@ -45,6 +45,8 @@ export function DealsView() {
   const jobMode = useConsole((st) => st.jobMode);
   const loginHzOk = useConsole((st) => st.loginHzOk);
   const loginEzeOk = useConsole((st) => st.loginEzeOk);
+  const loginHzChecking = useConsole((st) => st.loginHzChecking);
+  const loginEzeChecking = useConsole((st) => st.loginEzeChecking);
   const appendLog = useConsole((st) => st.appendLog);
   const openDialog = useConsole((st) => st.openDialog);
   const clearDeclineResult = useConsole((st) => st.clearDeclineResult);
@@ -416,12 +418,20 @@ export function DealsView() {
                       {
                         id: "hz" as const,
                         label: "HZ",
-                        hint: loginHzOk ? " · онлайн" : "",
+                        hint: loginHzChecking
+                          ? " · проверка"
+                          : loginHzOk
+                            ? " · онлайн"
+                            : "",
                       },
                       {
                         id: "eze" as const,
                         label: "Easy",
-                        hint: loginEzeOk ? " · онлайн" : "",
+                        hint: loginEzeChecking
+                          ? " · проверка"
+                          : loginEzeOk
+                            ? " · онлайн"
+                            : "",
                       },
                     ]}
                   />

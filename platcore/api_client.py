@@ -375,6 +375,32 @@ async def resolve_token(cfg: dict, base_url: str) -> str:
     )
 
 
+async def probe_and_restore_token(cfg: dict, service: str) -> bool:
+    """Тихо: кэш → headless профиль → диск. Не бросает. Для индикатора входа."""
+    from core.decline_hosts import DECLINE_SERVICE_URLS, normalize_decline_service
+
+    key = normalize_decline_service(service)
+    base_url = DECLINE_SERVICE_URLS[key]
+    cached = _token_from_cache(key)
+    if cached and token_works(base_url, cached):
+        return True
+    try:
+        headless = await _token_from_headless(cfg, base_url)
+    except Exception as exc:
+        warn(f"Сессия {key}: headless {exc}")
+        headless = None
+    if headless and token_works(base_url, headless):
+        _save_token(headless, service=key)
+        info(f"Сессия {key}: онлайн (headless)")
+        return True
+    for disk in _tokens_from_profile_disk(cfg, service=key):
+        if token_works(base_url, disk):
+            _save_token(disk, service=key)
+            info(f"Сессия {key}: онлайн (профиль)")
+            return True
+    return False
+
+
 def retryable_http_exc(exc: BaseException) -> bool:
     if isinstance(exc, TimeoutError):
         return True

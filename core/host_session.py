@@ -20,6 +20,10 @@ from core.paths import ROOT, RUNTIME_DIR
 _PROBE: dict[str, tuple[float, bool]] = {}
 _STATUS: tuple[float, dict[str, bool]] | None = None
 _STATUS_TTL_SEC = 20.0
+_CHECKING: dict[str, bool] = {
+    DECLINE_SERVICE_HZ: False,
+    DECLINE_SERVICE_EZE: False,
+}
 
 
 def service_from_url(url: object) -> str:
@@ -102,6 +106,15 @@ def invalidate_session_status() -> None:
     _STATUS = None
 
 
+def set_session_checking(service: object | None = None, checking: bool = False) -> None:
+    flag = bool(checking)
+    if service is None:
+        _CHECKING[DECLINE_SERVICE_HZ] = flag
+        _CHECKING[DECLINE_SERVICE_EZE] = flag
+        return
+    _CHECKING[normalize_decline_service(service)] = flag
+
+
 def session_status_stale(*, ttl: float | None = None) -> bool:
     limit = _STATUS_TTL_SEC if ttl is None else float(ttl)
     if _STATUS is None:
@@ -109,14 +122,24 @@ def session_status_stale(*, ttl: float | None = None) -> bool:
     return time.monotonic() - _STATUS[0] >= limit
 
 
+def session_unprobed() -> bool:
+    return _STATUS is None
+
+
 def session_status_snapshot() -> dict[str, Any]:
-    """Последние флаги без HTTP. Нет пробы — наличие файла токена."""
+    """Последние флаги без HTTP. До первой пробы — checking, не «онлайн»."""
     if _STATUS is not None:
-        return dict(_STATUS[1])
-    return {
-        "login_hz_ok": bool(read_cached_token(DECLINE_SERVICE_HZ)),
-        "login_eze_ok": bool(read_cached_token(DECLINE_SERVICE_EZE)),
-    }
+        flags = dict(_STATUS[1])
+    else:
+        flags = {"login_hz_ok": False, "login_eze_ok": False}
+    hz_chk = bool(_CHECKING.get(DECLINE_SERVICE_HZ))
+    eze_chk = bool(_CHECKING.get(DECLINE_SERVICE_EZE))
+    if _STATUS is None and not hz_chk and not eze_chk:
+        hz_chk = True
+        eze_chk = True
+    flags["login_hz_checking"] = hz_chk
+    flags["login_eze_checking"] = eze_chk
+    return flags
 
 
 def findnew_ok(base_url: str, token: str, *, timeout_sec: float = 5.0) -> bool:
@@ -178,7 +201,9 @@ def session_status_payload(*, force: bool = False) -> dict[str, Any]:
     global _STATUS
     now = time.monotonic()
     if not force and _STATUS is not None and now - _STATUS[0] < _STATUS_TTL_SEC:
-        return dict(_STATUS[1])
+        return session_status_snapshot()
     payload = _compute_session_status()
-    _STATUS = (now, payload)
+    payload["login_hz_checking"] = bool(_CHECKING.get(DECLINE_SERVICE_HZ))
+    payload["login_eze_checking"] = bool(_CHECKING.get(DECLINE_SERVICE_EZE))
+    _STATUS = (now, {"login_hz_ok": payload["login_hz_ok"], "login_eze_ok": payload["login_eze_ok"]})
     return dict(payload)

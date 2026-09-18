@@ -36,6 +36,8 @@ export function RunView() {
   const adbText = useConsole((st) => st.adbText);
   const loginHzOk = useConsole((st) => st.loginHzOk);
   const loginEzeOk = useConsole((st) => st.loginEzeOk);
+  const loginHzChecking = useConsole((st) => st.loginHzChecking);
+  const loginEzeChecking = useConsole((st) => st.loginEzeChecking);
   const loginTarget = useConsole((st) => st.loginTarget);
   const mediaDir = useConsole((st) => st.mediaDir);
   const pipeline = useConsole((st) => st.pipeline);
@@ -294,17 +296,21 @@ export function RunView() {
             <div className="grid grid-cols-2 gap-2">
               {(
                 [
-                  ["hz", "HZ", "HZ", loginHzOk],
-                  ["eze", "Easy", "EZ", loginEzeOk],
+                  ["hz", "HZ", "HZ", loginHzOk, loginHzChecking],
+                  ["eze", "Easy", "EZ", loginEzeOk, loginEzeChecking],
                 ] as const
-              ).map(([id, label, mark, ok]) => (
+              ).map(([id, label, mark, ok, checking]) => (
                 <HostTile
                   key={id}
                   mark={mark}
                   label={label}
                   ok={ok}
+                  checking={checking}
                   waiting={loginWaiting && loginTarget === id}
-                  disabled={running && !(loginWaiting && loginTarget === id)}
+                  disabled={
+                    (running && !(loginWaiting && loginTarget === id)) ||
+                    (checking && !(loginWaiting && loginTarget === id))
+                  }
                   onClick={() =>
                     void (loginWaiting && loginTarget === id
                       ? confirmLogin()
@@ -669,6 +675,7 @@ function HostTile({
   mark,
   label,
   ok,
+  checking,
   waiting,
   disabled,
   onClick,
@@ -676,10 +683,12 @@ function HostTile({
   mark: string;
   label: string;
   ok: boolean;
+  checking: boolean;
   waiting: boolean;
   disabled: boolean;
   onClick: () => void;
 }) {
+  const probe = checking && !waiting && !ok;
   return (
     <button
       type="button"
@@ -690,9 +699,14 @@ function HostTile({
         waiting &&
           "border-amber-400/55 bg-amber-50/90 shadow-[0_1px_2px_rgba(180,83,9,0.12)]",
         !waiting &&
+          probe &&
+          "border-sky-400/40 bg-sky-50/80",
+        !waiting &&
+          !probe &&
           ok &&
           "border-emerald-500/20 bg-white/90 hover:border-emerald-500/40 hover:bg-white",
         !waiting &&
+          !probe &&
           !ok &&
           "border-foreground/[0.08] bg-white/80 hover:border-foreground/15 hover:bg-white",
         disabled && "cursor-not-allowed opacity-50",
@@ -704,14 +718,20 @@ function HostTile({
           className={cn(
             "flex size-9 items-center justify-center rounded-xl text-[11px] font-bold tracking-[0.08em]",
             waiting && "bg-amber-100 text-amber-900",
-            !waiting && ok && "bg-emerald-500/10 text-emerald-800",
-            !waiting && !ok && "bg-foreground/[0.05] text-foreground/70",
+            !waiting && probe && "bg-sky-100 text-sky-900",
+            !waiting && !probe && ok && "bg-emerald-500/10 text-emerald-800",
+            !waiting && !probe && !ok && "bg-foreground/[0.05] text-foreground/70",
           )}
         >
           {mark}
         </span>
-        {waiting ? (
-          <Loader2 className="size-4 animate-spin text-amber-700" />
+        {waiting || probe ? (
+          <Loader2
+            className={cn(
+              "size-4 animate-spin",
+              waiting ? "text-amber-700" : "text-sky-700",
+            )}
+          />
         ) : ok ? (
           <span className="relative flex size-2.5">
             <span className="absolute inset-0 animate-ping rounded-full bg-emerald-400/80 motion-reduce:animate-none" />
@@ -727,21 +747,23 @@ function HostTile({
           className={cn(
             "mt-0.5 text-xs font-medium",
             waiting && "text-amber-800",
-            !waiting && ok && "text-emerald-700",
-            !waiting && !ok && "text-foreground/45",
+            !waiting && probe && "text-sky-800",
+            !waiting && !probe && ok && "text-emerald-700",
+            !waiting && !probe && !ok && "text-foreground/45",
           )}
         >
-          {waiting ? "Жду вход" : ok ? "Онлайн" : "Нет сессии"}
+          {waiting ? "Жду вход" : probe ? "Проверка сессии" : ok ? "Онлайн" : "Нет сессии"}
         </p>
       </div>
       <span
         className={cn(
           "mt-3 text-[11px] font-semibold",
           waiting && "text-amber-900",
-          !waiting && "text-foreground/40 group-hover:text-foreground/70",
+          probe && "text-sky-800",
+          !waiting && !probe && "text-foreground/40 group-hover:text-foreground/70",
         )}
       >
-        {waiting ? "Я вошёл" : ok ? "Войти снова" : "Войти"}
+        {waiting ? "Я вошёл" : probe ? "Подключение…" : ok ? "Войти снова" : "Войти"}
       </span>
     </button>
   );
