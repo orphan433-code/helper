@@ -70,10 +70,11 @@ def _confirm_cfg() -> dict:
         # (Android, надёжно). autofill — старый OCR-пузырь (легаси с iOS,
         # на Android такого пузыря нет — не работает).
         "sms_input_method": str(bank.get("sms_input_method", "notification")),
+        # Пусто / None — все pkg. Life (tj.life.mobile.app), не только polyphone.
         "sms_notify_pkg_filter": (
-            str(bank.get("sms_notify_pkg_filter"))
-            if bank.get("sms_notify_pkg_filter") is not None
-            else "polyphone"
+            str(bank.get("sms_notify_pkg_filter")).strip()
+            if bank.get("sms_notify_pkg_filter") not in (None, "")
+            else ""
         ),
         "sms_notify_poll_sec": float(bank.get("sms_notify_poll_sec", 0.6)),
         "success_screen_markers": _labels(

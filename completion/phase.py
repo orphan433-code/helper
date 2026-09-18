@@ -16,6 +16,7 @@ from completion.session import (
     CompletionSession,
     DealCompletionState,
     SessionDeal,
+    _ledger_is_eze,
     build_session,
     find_session_deal,
 )
@@ -419,11 +420,7 @@ def _api_http_dispute(cfg: dict | None) -> bool:
 
 
 def _eze_host_from_ledger(ledger: dict | None) -> bool:
-    data = ledger or {}
-    return (
-        str(data.get("service") or "") == "eze"
-        or str(data.get("source") or "") == "eze_ocr"
-    )
+    return _ledger_is_eze(ledger)
 
 
 def _eze_api_url() -> str:
@@ -987,10 +984,17 @@ async def run_completion_phase(
 
     grace_sec = float(comp_cfg.get("watch_grace_sec", 5.0))
     video_min_usdt = float(comp_cfg.get("video_min_usdt", 225.0))
+    from core.decline_hosts import DECLINE_SERVICE_EZE, normalize_decline_service
+    from core.deals_ui_local import pipeline_ui_service
+
+    eze = normalize_decline_service(pipeline_ui_service()) == DECLINE_SERVICE_EZE
+    if not eze:
+        eze = any(_eze_host_from_ledger(getattr(a, "ledger", None)) for a in accepted_deals)
     session = build_session(
         accepted_deals,
         grace_sec=grace_sec,
         video_min_usdt=video_min_usdt,
+        force_no_video=eze,
     )
     set_active_completion_session(session, cfg)
     try:
@@ -999,6 +1003,7 @@ async def run_completion_phase(
             cfg=cfg,
             page_by_order=page_by_order,
             video_min_usdt=video_min_usdt,
+            receipt_only=eze,
         )
     finally:
         set_active_completion_session(None, None)
@@ -1010,6 +1015,7 @@ async def _run_completion_phase_body(
     cfg: dict,
     page_by_order: dict[str, Page],
     video_min_usdt: float,
+    receipt_only: bool = False,
 ) -> None:
     timing = parse_human_timing(cfg)
     fake_money_sent = bool((cfg.get("stage2") or {}).get("fake_money_sent", False))
@@ -1036,10 +1042,13 @@ async def _run_completion_phase_body(
     section(f"Чеки: {len(session.deals)} сделок, вкладок {open_tabs}")
     info(f"Папка: {downloads_dir}")
     if awaiting:
-        info(
-            f"Порог видео: >{video_min_usdt:g} USDT "
-            f"(только чек: {n_shot}, чек+видео: {n_video})"
-        )
+        if receipt_only:
+            info("Easy: только чек + генерация, без видео")
+        else:
+            info(
+                f"Порог видео: >{video_min_usdt:g} USDT "
+                f"(только чек: {n_shot}, чек+видео: {n_video})"
+            )
         info(f"Ждём новые файлы (игнор старых {grace_sec:g} с)")
         info("После скана: без чека — «Отмена»; ошибка с чеком — «Повторить»")
     if n_skipped:

@@ -33,6 +33,7 @@ from core.pipeline_currencies import (
 from core.validators import (
     PanicError,
     deal_to_dict,
+    optional_clean_holder_name,
     session_requisites_key,
     skip_reason_for_card_bin,
     skip_reason_for_card_brand,
@@ -212,7 +213,9 @@ def _deal_from_ledger(
 ) -> tuple[TzkDeal, str, str, str]:
     cred = buy.get("credentials") or row.get("credentials") or {}
     card = str(cred.get("accountNumber") or _row_card(row)).strip()
-    holder = str(cred.get("ownerName") or _row_holder(row)).strip()
+    holder = optional_clean_holder_name(
+        cred.get("ownerName") or _row_holder(row)
+    )
     if not card or not holder:
         raise PanicError("API Accept: в /buy нет карты или имени")
 
@@ -437,10 +440,17 @@ async def accept_one_via_api(
     if not bool((_api_flow_cfg(cfg)).get("accept", True)):
         raise PanicError("api_flow.accept=false — PUT выкл")
 
-    code = await asyncio.to_thread(put_accept, base_url, token, deal_id)
-    if code not in (200, 204):
-        raise PanicError(f"PUT /accept {deal_id}: HTTP {code}")
-    ok(f"PUT /accept {order_id} → {code}")
+    if normalize_decline_service(host_service) == DECLINE_SERVICE_EZE:
+        from platcore.eze_accept import confirm_eze_put_accept
+
+        await confirm_eze_put_accept(
+            base_url, token, deal_id=deal_id, order_id=order_id
+        )
+    else:
+        code = await asyncio.to_thread(put_accept, base_url, token, deal_id)
+        if code not in (200, 204):
+            raise PanicError(f"PUT /accept {deal_id}: HTTP {code}")
+        ok(f"PUT /accept {order_id} → {code}")
 
     buy = await asyncio.to_thread(fetch_deal_buy, base_url, token, deal_id)
     print_buy_dump(row, buy)

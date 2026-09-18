@@ -47,9 +47,17 @@ _SIMPLE_TEXT_RE = re.compile(
 _MESSAGING_TEXT_RE = re.compile(
     r"sender=([^,]*),\s*text=(.*?),\s*time=\d+\}\]", re.DOTALL
 )
-# Прямое совпадение "Код: 1234" — самый надёжный сигнал OTP, не путается
-# с номерами карт/сумм.
-_CODE_RE = re.compile(r"[Кк]од:?\s*(\d{3,8})")
+# «Код: 1234» / «Код подтверждения: 1234» / «Kod: 1234» — не путать с суммой/картой.
+_CODE_RE = re.compile(
+    r"(?:ваш|vash)?\s*"
+    r"(?:код|kod|code|otp|пароль|parol)"
+    r"(?:\s+\w+){0,3}?"
+    r"\s*:?\s*"
+    r"(\d{4,6})",
+    re.IGNORECASE,
+)
+_BARE_CODE_RE = re.compile(r"^\s*(\d{4,6})\s*$")
+_ACTIV_HINTS = ("activ", "life", "polyphone", "megafon")
 
 
 def dump_notifications() -> str:
@@ -105,10 +113,36 @@ def parse_notifications(raw: str) -> list[dict]:
     return records
 
 
+def _pkg_allowed(pkg: str, pkg_filter: str | None) -> bool:
+    if not pkg_filter:
+        return True
+    needles = [p.strip().lower() for p in str(pkg_filter).split(",") if p.strip()]
+    if not needles:
+        return True
+    hay = (pkg or "").lower()
+    return any(n in hay for n in needles)
+
+
+def _is_activ_source(record: dict) -> bool:
+    hay = " ".join(
+        str(record.get(k) or "") for k in ("pkg", "title", "text")
+    ).lower()
+    return any(hint in hay for hint in _ACTIV_HINTS)
+
+
 def extract_code(record: dict) -> str | None:
-    hay = f"{record.get('title', '')}\n{record.get('text', '')}"
+    title = str(record.get("title") or "")
+    text = str(record.get("text") or "")
+    hay = f"{title}\n{text}"
     m = _CODE_RE.search(hay)
-    return m.group(1) if m else None
+    if m:
+        return m.group(1)
+    if _is_activ_source(record):
+        for chunk in (title, text):
+            bare = _BARE_CODE_RE.match(chunk)
+            if bare:
+                return bare.group(1)
+    return None
 
 
 def snapshot_notification_keys(
@@ -119,7 +153,7 @@ def snapshot_notification_keys(
     keys: set[str] = set()
     try:
         for rec in parse_notifications(dump_notifications()):
-            if pkg_filter and pkg_filter not in rec["pkg"]:
+            if not _pkg_allowed(rec["pkg"], pkg_filter):
                 continue
             keys.add(rec["key"])
     except Exception:
@@ -131,7 +165,7 @@ def wait_for_sms_code(
     *,
     timeout_sec: float = 45.0,
     poll_sec: float = 0.6,
-    pkg_filter: str | None = "polyphone",
+    pkg_filter: str | None = None,
     since_wall_ms: float | None = None,
     grace_sec: float = 8.0,
     baseline_keys: set[str] | None = None,
@@ -140,7 +174,8 @@ def wait_for_sms_code(
     """
     Блокирующий poll — периодически `adb shell dumpsys notification`.
 
-    pkg_filter: подстрока пакета (по умолчанию SMS-клиент). None — все pkg.
+    pkg_filter: подстрока пакета или список через запятую.
+    None / пусто — все pkg (Life, polyphone, megafon).
 
     Свежесть:
       • baseline_keys — ключи из снимка на тапе «Подтвердить» (старые не берём);
@@ -175,7 +210,7 @@ def wait_for_sms_code(
             when_ms = rec.get("when_ms")
             if when_ms is not None and when_ms < threshold_ms:
                 continue
-            if pkg_filter and pkg_filter not in rec["pkg"]:
+            if not _pkg_allowed(rec["pkg"], pkg_filter):
                 continue
             code = extract_code(rec)
             if code:
@@ -183,6 +218,13 @@ def wait_for_sms_code(
                 if verbose:
                     print(f"    ⌨ SMS: код {code} из уведомления pkg={rec['pkg']!r}")
                 return code
+            if verbose and key not in returned:
+                returned.add(key)
+                title = (rec.get("title") or "")[:40]
+                print(
+                    f"    ⌨ SMS: шторка pkg={rec['pkg']!r} "
+                    f"title={title!r} — код не распознан"
+                )
         _time.sleep(poll_sec)
 
     raise TimeoutError(
@@ -215,7 +257,7 @@ def watch(
                 if rec["key"] in seen:
                     continue
                 seen.add(rec["key"])
-                if pkg_filter and pkg_filter not in rec["pkg"]:
+                if not _pkg_allowed(rec["pkg"], pkg_filter):
                     continue
 
                 ts = time.strftime("%H:%M:%S")

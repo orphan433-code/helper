@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
@@ -24,6 +25,29 @@ from platcore.api_client import (
 def _progress(cb: Callable[..., None] | None, msg: str) -> None:
     if cb is not None:
         cb(msg)
+
+
+def _unlink_quiet(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _unlink_runtime_file(path: Path | None) -> None:
+    """XE/генерация в runtime — чеки из Downloads не трогаем."""
+    if path is None:
+        return
+    try:
+        resolved = Path(path).resolve()
+        root = RUNTIME_DIR.resolve()
+        if resolved == root or root not in resolved.parents:
+            return
+        resolved.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 async def complete_deal_via_api(
@@ -74,21 +98,25 @@ async def complete_deal_via_api(
         info(f"  Activ     : {record.get('tjs')} TJS")
         for path in parts:
             info(f"  файл      : {path.name}  ({path.stat().st_size} байт)")
-        if fake_money_sent:
-            ok("fake_money_sent: PUT /upload и /approve не шлём")
-            return "ok"
-        _progress(on_progress, f"PUT /upload ({len(parts)} файл)")
-        uploaded = await asyncio.to_thread(put_upload, host, token, parts)
-        file_ids = [str(item.get("id") or "") for item in uploaded]
-        for item in uploaded:
-            info(
-                f"  id {item.get('id')}  {item.get('type')}  "
-                f"{item.get('fileName') or item.get('url')}"
-            )
-        _progress(on_progress, "PUT /approve")
-        await asyncio.to_thread(put_approve, host, token, task_id, file_ids)
-        ok(f"EZE approve {order_id}: {len(file_ids)} файл(ов)")
-        return "confirmed"
+        try:
+            if fake_money_sent:
+                ok("fake_money_sent: PUT /upload и /approve не шлём")
+                return "ok"
+            _progress(on_progress, f"PUT /upload ({len(parts)} файл)")
+            uploaded = await asyncio.to_thread(put_upload, host, token, parts)
+            file_ids = [str(item.get("id") or "") for item in uploaded]
+            for item in uploaded:
+                info(
+                    f"  id {item.get('id')}  {item.get('type')}  "
+                    f"{item.get('fileName') or item.get('url')}"
+                )
+            _progress(on_progress, "PUT /approve")
+            await asyncio.to_thread(put_approve, host, token, task_id, file_ids)
+            ok(f"EZE approve {order_id}: {len(file_ids)} файл(ов)")
+            return "confirmed"
+        finally:
+            for extra in extras:
+                _unlink_runtime_file(extra)
 
     base_url = host
 
@@ -100,12 +128,17 @@ async def complete_deal_via_api(
 
     brand = activ_brand_label(account_digits)
     card_img = render_from_ledger(record, card_digits=account_digits)
-    hz_path = save_hz_card(RUNTIME_DIR / f"hz_{order_id}.png", card_img)
+    tmp = tempfile.NamedTemporaryFile(
+        prefix=f"hz_{order_id}_", suffix=".png", delete=False
+    )
+    tmp.close()
+    hz_path = save_hz_card(Path(tmp.name), card_img)
 
     parts: list[Path] = []
     if video is not None:
         video = Path(video)
         if not video.is_file():
+            _unlink_quiet(hz_path)
             raise PanicError(f"API complete: нет видео {video}")
         parts.append(video)
     parts.append(proof)
@@ -118,28 +151,33 @@ async def complete_deal_via_api(
     for path in parts:
         info(f"  файл      : {path.name}  ({path.stat().st_size} байт)")
 
-    if fake_money_sent:
-        ok("fake_money_sent: PUT /upload и /approve не шлём")
-        return "ok"
+    try:
+        if fake_money_sent:
+            ok("fake_money_sent: PUT /upload и /approve не шлём")
+            return "ok"
 
-    payload = ledger_paid_payload(
-        record,
-        holder=holder_name,
-        give_fiat=give_fiat,
-    )
-    _progress(on_progress, "POST /_hz/ledger paid=1")
-    await asyncio.to_thread(post_hz_ledger, base_url, token, payload)
-
-    _progress(on_progress, f"PUT /upload ({len(parts)} файл)")
-    uploaded = await asyncio.to_thread(put_upload, base_url, token, parts)
-    file_ids = [str(item.get("id") or "") for item in uploaded]
-    for item in uploaded:
-        info(
-            f"  id {item.get('id')}  {item.get('type')}  "
-            f"{item.get('fileName') or item.get('url')}"
+        payload = ledger_paid_payload(
+            record,
+            holder=holder_name,
+            give_fiat=give_fiat,
         )
+        _progress(on_progress, "POST /_hz/ledger paid=1")
+        await asyncio.to_thread(post_hz_ledger, base_url, token, payload)
 
-    _progress(on_progress, "PUT /approve")
-    await asyncio.to_thread(put_approve, base_url, token, task_id, file_ids)
-    ok(f"API approve {order_id}: {len(file_ids)} файл(ов)")
-    return "confirmed"
+        _progress(on_progress, f"PUT /upload ({len(parts)} файл)")
+        uploaded = await asyncio.to_thread(put_upload, base_url, token, parts)
+        file_ids = [str(item.get("id") or "") for item in uploaded]
+        for item in uploaded:
+            info(
+                f"  id {item.get('id')}  {item.get('type')}  "
+                f"{item.get('fileName') or item.get('url')}"
+            )
+
+        _progress(on_progress, "PUT /approve")
+        await asyncio.to_thread(put_approve, base_url, token, task_id, file_ids)
+        ok(f"API approve {order_id}: {len(file_ids)} файл(ов)")
+        return "confirmed"
+    finally:
+        _unlink_quiet(hz_path)
+        for extra in extras:
+            _unlink_runtime_file(extra)

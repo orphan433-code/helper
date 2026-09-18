@@ -106,11 +106,20 @@ def find_session_deal(
     return None
 
 
+def _ledger_is_eze(ledger: dict | None) -> bool:
+    data = ledger or {}
+    return (
+        str(data.get("service") or "") == "eze"
+        or str(data.get("source") or "") == "eze_ocr"
+    )
+
+
 def build_session(
     accepted_deals: list[AcceptedDeal],
     *,
     grace_sec: float = 5.0,
     video_min_usdt: float = 225.0,
+    force_no_video: bool = False,
 ) -> CompletionSession:
     deals: list[SessionDeal] = []
     threshold = float(video_min_usdt)
@@ -125,6 +134,7 @@ def build_session(
         check = getattr(deal, "amount_check", 0) or 0
         check_cur = str(getattr(deal, "amount_check_currency", "") or "").strip()
         give_fiat = f"{float(check):.2f} {check_cur}".strip() if check and check_cur else ""
+        eze = force_no_video or _ledger_is_eze(getattr(accepted, "ledger", None))
         deals.append(
             SessionDeal(
                 index=accepted.index,
@@ -134,7 +144,7 @@ def build_session(
                 amount_tjs=f"{inp['value']:g} {inp['currency']}",
                 amount_target=f"{ver['value']:g} {ver['currency']}",
                 amount_usdt=amount_usdt,
-                needs_video=False if bank_skipped else amount_usdt > threshold,
+                needs_video=False if bank_skipped or eze else amount_usdt > threshold,
                 state=(
                     DealCompletionState.SKIPPED
                     if bank_skipped

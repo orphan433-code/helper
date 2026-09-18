@@ -23,6 +23,7 @@ from core.validators import (
     PanicError,
     deal_to_dict,
     ignored_bank_prefixes,
+    optional_clean_holder_name,
     session_requisites_key,
 )
 from platcore.api_accept import (
@@ -141,7 +142,9 @@ def _deal_from_eze(
 ) -> TzkDeal:
     cred = buy.get("credentials") or row.get("credentials") or {}
     card = str(cred.get("accountNumber") or _row_card(row)).strip()
-    holder = str(cred.get("ownerName") or _row_holder(row)).strip()
+    holder = optional_clean_holder_name(
+        cred.get("ownerName") or _row_holder(row)
+    )
     if not card or not holder:
         raise PanicError("EZE: в /buy нет карты или имени")
     fiat_code = _row_fiat_code(row) or str(
