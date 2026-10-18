@@ -16,6 +16,8 @@ from device.ocr import OcrHit
 _MASKED_CARD_RE = re.compile(
     r"(\d{4,8})\s*[*•]{2,}\s*(\d{4})",
 )
+# Звёзды, точки, крестики — любая дырка в номере, бренд не важен.
+_MASK_CHAR_RE = re.compile(r"[*•·∙●×xX]")
 _CARD_DIGITS_RE = re.compile(r"\d{10,19}")
 _SUCCESS_MARKERS = (
     "Операция завершена успешно",
@@ -26,6 +28,10 @@ _RECIPIENT_CARD_LABELS = (
     "Карта получателя",
     "карта получателя",
     "Recipient card",
+)
+_ALIF_ACCOUNT_LABELS = (
+    "Счёт зачисления",
+    "Счет зачисления",
 )
 
 
@@ -43,12 +49,37 @@ def _normalize_card_text(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
 
 
+def _alif_card_parts(compact: str) -> tuple[str, str] | None:
+    """Маска с дыркой: хвост 4 цифры, цифры в начале — если они есть.
+
+    MCR**8307, VSA**1488, 4154***ANY**1636, ****8307. Бренд не список.
+    Сумму «5918,07» и голый номер транзакции не берём: там нет дырки в номере.
+    """
+    from core.payout_bank import is_alif
+
+    if not is_alif():
+        return None
+    if not compact or not _MASK_CHAR_RE.search(compact):
+        return None
+    tail = re.search(r"(\d{4})$", compact)
+    if tail is None:
+        return None
+    head = compact[: tail.start()]
+    prefix_match = re.match(r"(\d{4,8})", head)
+    prefix = prefix_match.group(1) if prefix_match else ""
+    return prefix, tail.group(1)
+
+
 def extract_card_parts(text: str) -> tuple[str, str] | None:
     """Вернуть (prefix, last4) из маскированной или полной карты."""
     compact = _normalize_card_text(text)
     masked = _MASKED_CARD_RE.search(compact)
     if masked:
         return masked.group(1), masked.group(2)
+
+    alif = _alif_card_parts(compact)
+    if alif is not None:
+        return alif
 
     digits = re.sub(r"\D", "", compact)
     if len(digits) >= 10:
@@ -66,6 +97,9 @@ def cards_match(account_digits: str, receipt_card: str) -> bool:
     prefix, last4 = parts
     if not deal_digits.endswith(last4):
         return False
+    # MCR**8307 — BIN на чеке нет, хватает хвоста.
+    if not prefix or not prefix.isdigit():
+        return True
     if deal_digits.startswith(prefix):
         return True
     if len(prefix) >= 6 and deal_digits.startswith(prefix[:6]):
@@ -110,9 +144,38 @@ def _ocr_image(path: Path) -> tuple[list[OcrHit], str]:
     return hits, raw_text
 
 
+def _row_value(hits: list[OcrHit], label: OcrHit) -> str:
+    """Текст справа от якоря, включая куски чуть ниже строки."""
+    cells = [
+        hit
+        for hit in hits
+        if hit is not label
+        and hit.x >= label.x + 40
+        and -12 <= (hit.y - label.y) <= 36
+    ]
+    return " ".join(hit.text for hit in sorted(cells, key=lambda hit: (hit.y, hit.x)))
+
+
+def _recipient_labels() -> tuple[str, ...]:
+    from core.payout_bank import is_alif
+
+    if is_alif():
+        return _ALIF_ACCOUNT_LABELS
+    return _RECIPIENT_CARD_LABELS
+
+
 def _find_recipient_card_in_hits(hits: list[OcrHit], raw_text: str) -> str:
-    label = find_labels(hits, list(_RECIPIENT_CARD_LABELS), partial=True)
+    from core.payout_bank import is_alif
+
+    label = find_labels(hits, list(_recipient_labels()), partial=True)
     if label is not None:
+        # Alif: значение справа от «Счёт зачисления», маска какая угодно.
+        if is_alif():
+            cell = _row_value(hits, label)
+            parts = _alif_card_parts(_normalize_card_text(cell))
+            if parts:
+                prefix, last4 = parts
+                return f"{prefix}****{last4}"
         same_row = [
             hit
             for hit in hits
@@ -138,6 +201,17 @@ def _find_recipient_card_in_hits(hits: list[OcrHit], raw_text: str) -> str:
         prefix, last4 = match.group(1), match.group(2)
         return f"{prefix}****{last4}"
 
+    if is_alif():
+        pay = find_labels(hits, ["Способ оплаты"], partial=True)
+        for hit in sorted(hits, key=lambda h: h.y):
+            if pay is not None and abs(hit.y - pay.y) <= 28:
+                continue
+            alif = _alif_card_parts(_normalize_card_text(hit.text))
+            if alif is None:
+                continue
+            prefix, last4 = alif
+            return f"{prefix}****{last4}"
+
     for match in _CARD_DIGITS_RE.finditer(raw_text):
         digits = match.group(0)
         if len(digits) >= 10:
@@ -146,6 +220,12 @@ def _find_recipient_card_in_hits(hits: list[OcrHit], raw_text: str) -> str:
 
 
 def is_success_receipt(hits: list[OcrHit], raw_text: str) -> bool:
+    from core.payout_bank import is_alif
+
+    if is_alif():
+        folded = raw_text.lower().replace("ё", "е")
+        return "исполнено" in folded
+
     if is_transfer_success_screen(
         hits,
         {"success_screen_markers": ["Детали перевода"]},

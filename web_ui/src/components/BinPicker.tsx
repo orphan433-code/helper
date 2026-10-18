@@ -10,6 +10,7 @@ const SHORT: Record<string, string> = {
   basis: "Basis",
   liberty: "Liberty",
   tbc: "TBC",
+  tjk: "ТЖК",
 };
 
 export function bankShortName(bank: BankBinRow): string {

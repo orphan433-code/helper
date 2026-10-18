@@ -10,6 +10,7 @@ DECLINE_DEFAULT_ON: frozenset[str] = frozenset(
     (
         *bins_for("tbc"),
         *bins_for("bog", visa=False, mastercard=True),
+        *bins_for("tjk"),
     )
 )
 DECLINE_DEFAULT_PER_RUN = 10

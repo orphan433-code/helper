@@ -72,6 +72,7 @@ def _deal_to_ui(deal: SessionDeal) -> dict[str, Any]:
         "has_video": bool(deal.video_path),
         "file_name": Path(deal.proof_path).name if deal.proof_path else "",
         "error": deal.error or "",
+        "hint": "пропуск — Отмена" if ui_state == "skipped" else "",
         "can_cancel": False,
         "can_retry": False,
     }
@@ -99,37 +100,38 @@ def notify_completion_progress(
     if handler is None:
         return
 
-    done = sum(
-        1
-        for d in session.deals
-        if d.state.value in ("completed", "cancelled")
-    )
-    failed = sum(1 for d in session.deals if d.state.value == "failed")
-    total = len(session.deals)
+    shown = [d for d in session.deals if d.state.value != "parked"]
+    done = sum(1 for d in shown if d.state.value in ("completed", "cancelled"))
+    failed = sum(1 for d in shown if d.state.value == "failed")
+    total = len(shown)
     deals_ui = []
-    for d in session.deals:
+    for d in shown:
         row = _deal_to_ui(d)
         has_id = bool(d.order_id)
         no_proof = not d.proof_path
-        # «Отмена» только после первого скана чеков (cancel_unlocked)
+        # Пропуск виден сразу, с «Отмена». У остальных «Отмена» после первого скана.
         unlock = session.cancel_unlocked
         if d.state.value == "skipped":
-            row["can_cancel"] = bool(allow_cancel and unlock and has_id)
+            row["can_cancel"] = bool(has_id)
         elif d.state.value in ("awaiting_proof", "failed") and no_proof:
-            row["can_cancel"] = bool(allow_cancel and unlock and has_id)
+            row["can_cancel"] = bool(unlock and has_id)
         else:
             row["can_cancel"] = False
-        # Повтор — у FAILED с уже найденным чеком (тот же файл)
-        row["can_retry"] = bool(
-            allow_cancel
+        from core.payout_bank import is_alif
+
+        row["can_park"] = bool(
+            is_alif()
             and has_id
+            and no_proof
+            and d.state.value == "awaiting_proof"
+        )
+        row["can_retry"] = bool(
+            has_id
             and d.state.value == "failed"
             and bool(d.proof_path)
         )
-        # Новый файл — сбросить привязку и снова сканировать
         row["can_rescan"] = bool(
-            allow_cancel
-            and has_id
+            has_id
             and d.state.value in ("failed", "proof_matched")
         )
         deals_ui.append(row)
@@ -148,6 +150,21 @@ def notify_completion_progress(
         handler(payload)
     except Exception:
         pass
+
+
+def next_ui_index(accepted_deals: list, progress: PipelineProgressTracker | None) -> int:
+    """Номер строки в панели. Уже показанный пропуск не переиспользуем."""
+    used: list[int] = []
+    for deal in accepted_deals:
+        idx = getattr(deal, "index", None)
+        if idx:
+            used.append(int(idx))
+    if progress is not None:
+        for row in progress.deals:
+            idx = row.get("index")
+            if idx:
+                used.append(int(idx))
+    return (max(used) if used else 0) + 1
 
 
 def _digits_tag(raw: str) -> str:

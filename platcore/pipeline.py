@@ -24,13 +24,14 @@ from platcore.list import (
 )
 from core.browser_session import close_stale_tabs
 from core.deal_bridge import deal_to_transfer_form, save_pending_deal
-from ui.progress import PipelineProgressTracker
+from ui.progress import PipelineProgressTracker, next_ui_index
 from ui.job_control import JobStopped, raise_if_stopped
 from core.recovery import deal_summary_from_accepted, offer_recovery_choice
 from core.deals_ui_local import (
     pipeline_ui_bin_prefixes,
     pipeline_ui_skip_bog,
     pipeline_ui_skip_tbc,
+    pipeline_ui_skip_tjk,
 )
 from core.pipeline_currencies import (
     fiat_code_from_amount_raw,
@@ -42,8 +43,7 @@ from core.validators import (
     deal_to_dict,
     parse_amount_value,
     session_requisites_key,
-    skip_reason_for_card_bin,
-    skip_reason_for_card_brand,
+    skip_reason_for_card_choice,
     skip_reason_for_preview,
     skip_reason_for_session_duplicate,
     skip_reason_for_ignored_banks,
@@ -60,6 +60,7 @@ class AcceptedDeal:
     platcore_page: Page | None = None
     amount_usdt: float = 0.0
     bank_skipped: bool = False
+    dry_stop: bool = False
     ledger: dict | None = None
     extra_proofs: list | None = None
 
@@ -354,17 +355,32 @@ async def pay_accepted_deal(
         except JobStopped:
             raise
         except BankDryStop:
-            warn(
-                f"Сделка #{accepted.index}: тест — сверка ок, оплату не жмём"
-            )
+            from core.payout_bank import is_alif
+
+            if is_alif():
+                warn(
+                    f"Сделка #{accepted.index}: Alif тест — "
+                    "сверка ок, «Оплатить» не нажата"
+                )
+                prompt = (
+                    "Alif тест: форма дошла до подтверждения.\n"
+                    "«Оплатить» не нажимали, платёж не ушёл.\n"
+                    "Проверь экран на телефоне."
+                )
+            else:
+                warn(
+                    f"Сделка #{accepted.index}: тест — сверка ок, оплату не жмём"
+                )
+                prompt = (
+                    "Тест: форма и сверка EUR/USD ок.\n"
+                    "«Подтвердить и перевести» не жмём, SMS не ждём.\n"
+                    "Проверь экран на телефоне."
+                )
             from ui.prompts import wait_user_confirm
 
-            await wait_user_confirm(
-                "Тест: форма и сверка EUR/USD ок.\n"
-                "«Подтвердить и перевести» не жмём, SMS не ждём.\n"
-                "Проверь экран на телефоне."
-            )
+            await wait_user_confirm(prompt)
             accepted.bank_skipped = True
+            accepted.dry_stop = True
             if progress is not None:
                 progress.mark_skipped(accepted.index, "тест: стоп до кода")
             return False
@@ -392,8 +408,8 @@ async def pay_accepted_deal(
                 return True
             warn(
                 f"Сделка #{accepted.index} пропущена — "
-                f"банк не выполнен, слот засчитан "
-                f"(остаётся в пуле чеков для отмены)"
+                "банк не выполнен, слот не занимаем, беру следующую. "
+                "Эту потом «Отмена»: accept уже ушёл"
             )
             accepted.bank_skipped = True
             if progress is not None:
@@ -424,6 +440,7 @@ async def accept_deals_loop(
     bin_prefixes = pipeline_ui_bin_prefixes()
     skip_tbc = pipeline_ui_skip_tbc()
     skip_bog = pipeline_ui_skip_bog()
+    skip_tjk = pipeline_ui_skip_tjk()
     monitor_url = dash_cfg["monitor_url"]
     timing = parse_human_timing(cfg)
 
@@ -460,6 +477,8 @@ async def accept_deals_loop(
         info(f"Пропуск TBC: {', '.join(p + '*' for p in ignored_bank_prefixes('tbc'))}")
     if skip_bog:
         info(f"Пропуск BOG: {', '.join(p + '*' for p in ignored_bank_prefixes('bog'))}")
+    if skip_tjk:
+        info(f"Пропуск ТЖК: {', '.join(p + '*' for p in ignored_bank_prefixes('tjk'))}")
     if bin_prefixes:
         info(f"BIN: только {', '.join(p + '*' for p in bin_prefixes)}")
     brands = []
@@ -524,7 +543,10 @@ async def accept_deals_loop(
                 continue
 
             skip_bank = skip_reason_for_ignored_banks(
-                preview.account_raw, skip_tbc=skip_tbc, skip_bog=skip_bog
+                preview.account_raw,
+                skip_tbc=skip_tbc,
+                skip_bog=skip_bog,
+                skip_tjk=skip_tjk,
             )
             if skip_bank:
                 info(
@@ -544,25 +566,16 @@ async def accept_deals_loop(
                 seen.add(preview.fingerprint)
                 continue
 
-            if bin_prefixes:
-                skip_bin = skip_reason_for_card_bin(
-                    preview.account_raw, bin_prefixes
-                )
-                if skip_bin:
-                    info(
-                        f"Пропуск (BIN): {preview.account_raw or '—'} — {skip_bin}"
-                    )
-                    seen.add(preview.fingerprint)
-                    continue
-
-            skip_card = skip_reason_for_card_brand(
+            skip_card = skip_reason_for_card_choice(
                 preview.account_raw,
                 allow_visa=allow_visa,
                 allow_mastercard=allow_mc,
+                bin_prefixes=bin_prefixes,
             )
             if skip_card:
+                kind = "BIN" if bin_prefixes else "фильтр карты"
                 info(
-                    f"Пропуск (фильтр карты): {preview.account_raw or '—'} — {skip_card}"
+                    f"Пропуск ({kind}): {preview.account_raw or '—'} — {skip_card}"
                 )
                 seen.add(preview.fingerprint)
                 continue
@@ -582,7 +595,7 @@ async def accept_deals_loop(
 
             info(f"Accept: {preview.fingerprint}")
             seen.add(preview.fingerprint)
-            next_index = spawned + 1
+            next_index = next_ui_index(accepted_deals, progress)
             progress.start_accept(next_index, preview)
 
             try:
@@ -662,6 +675,13 @@ async def accept_deals_loop(
             bank_ok = await pay_accepted_deal(
                 accepted, cfg, progress=progress
             )
+            if not bank_ok and not accepted.dry_stop:
+                spawned = max(0, spawned - 1)
+                info(
+                    f"#{accepted.index}: пропуск — слот свободен, следующая сделка"
+                )
+                list_page = None
+                break
             if not bank_ok:
                 list_page = None
                 break

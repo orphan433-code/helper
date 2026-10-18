@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
-from completion.hz_card import activ_brand_label, render_from_ledger, save_hz_card
+from completion.hz_card import card_brand_label, render_from_ledger, save_hz_card
 from core.logkit import info, ok, section
 from core.paths import RUNTIME_DIR
 from core.validators import PanicError
@@ -126,7 +126,7 @@ async def complete_deal_via_api(
     if not (record.get("tjs") and record.get("give_amt")):
         raise PanicError(f"API complete: ledger пуст deal={order_id}")
 
-    brand = activ_brand_label(account_digits)
+    brand = card_brand_label(record, card_digits=account_digits)
     card_img = render_from_ledger(record, card_digits=account_digits)
     tmp = tempfile.NamedTemporaryFile(
         prefix=f"hz_{order_id}_", suffix=".png", delete=False
@@ -147,7 +147,7 @@ async def complete_deal_via_api(
     section(f"API Money sent {order_id}")
     info(f"  uuid      : {task_id}")
     info(f"  I give    : {record.get('give_amt')} {str(record.get('give_cur') or '').upper()}")
-    info(f"  Activ     : {record.get('tjs')} TJS  ({brand})")
+    info(f"  {brand:10}: {record.get('tjs')} TJS")
     for path in parts:
         info(f"  файл      : {path.name}  ({path.stat().st_size} байт)")
 
@@ -172,7 +172,6 @@ async def complete_deal_via_api(
                 f"  id {item.get('id')}  {item.get('type')}  "
                 f"{item.get('fileName') or item.get('url')}"
             )
-
         _progress(on_progress, "PUT /approve")
         await asyncio.to_thread(put_approve, base_url, token, task_id, file_ids)
         ok(f"API approve {order_id}: {len(file_ids)} файл(ов)")

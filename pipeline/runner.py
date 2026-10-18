@@ -81,9 +81,19 @@ async def run_login(service: str | None = None) -> None:
         await close_session(session, reason="login")
 
 
-async def run_pipeline(service: str | None = None) -> None:
+async def run_pipeline(
+    service: str | None = None,
+    payout_bank: str | None = None,
+) -> None:
     begin_job()
+    from core.payout_bank import is_alif, reset_payout_bank, set_payout_bank
+
+    bank_token = set_payout_bank(payout_bank)
     cfg = load_config()
+    if is_alif():
+        from core.deals_ui_local import overlay_alif_cfg
+
+        cfg = overlay_alif_cfg(cfg)
     pipe_cfg = cfg.get("pipeline") or {}
     comp_cfg = cfg.get("completion") or {}
     api_flow = cfg.get("api_flow") or {}
@@ -107,7 +117,10 @@ async def run_pipeline(service: str | None = None) -> None:
     if not http_only:
         session = await launch_browser(cfg)
 
-    section("Цикл tzk")
+    section("Цикл tzk" + (" · Alif" if is_alif() else ""))
+    if is_alif():
+        info("Alif: «Оплатить» жмёшь сам. Скрипт ждёт «На главную» и идёт дальше.")
+        info("Alif: пуши отмен не слушаем. Без чека сделка уйдёт в ожидание.")
     if session is not None:
         info(f"Профиль: {session.profile.name}")
     else:
@@ -122,9 +135,11 @@ async def run_pipeline(service: str | None = None) -> None:
     cancel_grace = float(bank_cfg.get("cancel_watch_grace_sec", 45))
     cancel_poll = float(bank_cfg.get("cancel_watch_poll_sec", 1.7))
     cancel_fee = float(bank_cfg.get("cancel_match_fee_rate", 0.018))
-    start_cancel_watch(
-        poll_sec=cancel_poll, verbose=True, fee_rate=cancel_fee
-    )
+    watch_cancels = not is_alif()
+    if watch_cancels:
+        start_cancel_watch(
+            poll_sec=cancel_poll, verbose=True, fee_rate=cancel_fee
+        )
     try:
         raise_if_stopped()
         set_automation_phase("bank")
@@ -138,9 +153,12 @@ async def run_pipeline(service: str | None = None) -> None:
                 session.context, cfg
             )
         elif eze:
-            from platcore.api_accept import accept_deals_loop_api
+            from platcore.api_accept import EZE_ACCEPT_CURRENCIES, accept_deals_loop_api
 
-            info("Режим: e.hz Accept как HZ, пул GEL (отдельный Chrome)")
+            info(
+                "Режим: e.hz Accept как HZ, пул "
+                f"{', '.join(EZE_ACCEPT_CURRENCIES)} (отдельный Chrome)"
+            )
             accepted_deals, page_by_order = await accept_deals_loop_api(
                 cfg, service="eze"
             )
@@ -211,7 +229,9 @@ async def run_pipeline(service: str | None = None) -> None:
         raise
     finally:
         # Хвост после последней сделки — успеть поймать «Otmena spisaniya».
-        stop_cancel_watch(grace_sec=cancel_grace)
+        if watch_cancels:
+            stop_cancel_watch(grace_sec=cancel_grace)
+        reset_payout_bank(bank_token)
         set_automation_phase("idle")
         enter_foreground()
         # Стоп / отмена / ошибка — всегда гасим браузер (критично для headless).

@@ -11,7 +11,7 @@ from core.decline_bins import (
     clamp_decline_limit,
 )
 from core.decline_hosts import normalize_decline_service
-from core.deals_ui_local import _patch_section, decline_ui_service, load_local, pipeline_ui_service
+from core.deals_ui_local import _patch_section, decline_ui_service, load_local
 from core.pipeline_bins import PIPELINE_BIN_PREFIXES
 from core.pipeline_currencies import gui_pipeline_currencies
 from core.redirect_bins import REDIRECT_BIN_PREFIXES
@@ -244,7 +244,9 @@ def decline_service_setting(_cfg: dict | None = None) -> str:
 
 
 def pipeline_service_setting(_cfg: dict | None = None) -> str:
-    return pipeline_ui_service()
+    from core.deals_ui_local import pipeline_saved_service
+
+    return pipeline_saved_service()
 
 
 def apply_pipeline_service(service: str = "hz") -> str:
@@ -254,9 +256,9 @@ def apply_pipeline_service(service: str = "hz") -> str:
 
 
 def pipeline_dry_stop_setting(_cfg: dict | None = None) -> bool:
-    from core.deals_ui_local import pipeline_ui_dry_stop
+    from core.deals_ui_local import pipeline_saved_dry_stop
 
-    return pipeline_ui_dry_stop()
+    return pipeline_saved_dry_stop()
 
 
 def apply_pipeline_dry_stop(enabled: bool) -> bool:
@@ -266,9 +268,9 @@ def apply_pipeline_dry_stop(enabled: bool) -> bool:
 
 
 def pipeline_skip_tbc_setting(_cfg: dict | None = None) -> bool:
-    from core.deals_ui_local import pipeline_ui_skip_tbc
+    from core.deals_ui_local import pipeline_saved_skip_tbc
 
-    return pipeline_ui_skip_tbc()
+    return pipeline_saved_skip_tbc()
 
 
 def apply_pipeline_skip_tbc(enabled: bool) -> bool:
@@ -278,14 +280,26 @@ def apply_pipeline_skip_tbc(enabled: bool) -> bool:
 
 
 def pipeline_skip_bog_setting(_cfg: dict | None = None) -> bool:
-    from core.deals_ui_local import pipeline_ui_skip_bog
+    from core.deals_ui_local import pipeline_saved_skip_bog
 
-    return pipeline_ui_skip_bog()
+    return pipeline_saved_skip_bog()
 
 
 def apply_pipeline_skip_bog(enabled: bool) -> bool:
     flag = bool(enabled)
     _patch_section("pipeline", skip_bog=flag)
+    return flag
+
+
+def pipeline_skip_tjk_setting(_cfg: dict | None = None) -> bool:
+    from core.deals_ui_local import pipeline_saved_skip_tjk
+
+    return pipeline_saved_skip_tjk()
+
+
+def apply_pipeline_skip_tjk(enabled: bool) -> bool:
+    flag = bool(enabled)
+    _patch_section("pipeline", skip_tjk=flag)
     return flag
 
 

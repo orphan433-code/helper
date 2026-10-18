@@ -58,6 +58,25 @@ def _fmt_cur(raw: str) -> str:
     return str(raw or "").strip().upper()
 
 
+def card_brand_label(
+    record: dict | None = None,
+    *,
+    card_digits: str = "",
+    brand: str = "",
+) -> str:
+    """Подпись второй строки PNG. Alif: «Alif USD». Activ: «Activ to Visa/MC»."""
+    rec = record or {}
+    bank = str(rec.get("bank") or "").strip().lower()
+    if not bank:
+        from core.payout_bank import is_alif
+
+        bank = "alif" if is_alif() else "activ"
+    if bank == "alif":
+        cur = str(rec.get("alif_cur") or "usd").strip().upper() or "USD"
+        return f"Alif {cur}"
+    return activ_brand_label(card_digits, brand=brand)
+
+
 def activ_brand_label(card_digits: str = "", *, brand: str = "") -> str:
     hint = (brand or "").strip().lower()
     if hint in ("mc", "mastercard"):
@@ -158,12 +177,14 @@ def render_from_ledger(
     card_digits: str = "",
     brand: str = "",
 ) -> Image.Image:
+    label = card_brand_label(record, card_digits=card_digits, brand=brand)
+    alif = label.startswith("Alif ")
     return render_hz_card(
         give_amt=record.get("give_amt") or "0",
         give_cur=str(record.get("give_cur") or "usd"),
         tjs=record.get("tjs") or "0",
-        brand_label=activ_brand_label(card_digits, brand=brand),
-        amount_usd=record.get("amount_usd"),
+        brand_label=label,
+        amount_usd=None if alif else record.get("amount_usd"),
     )
 
 

@@ -28,10 +28,13 @@ bank_decline:
         - "415479"
         - "431570"
         - "431571"
+        - "515881"
         - "516185"
         - "518974"
         - "521026"
+        - "535661"
         - "537493"
+        - "559656"
     bog:
       label: Bank of Georgia
       patterns: ["bank of georgia", georgia, bog]

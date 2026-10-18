@@ -269,6 +269,7 @@ async def _read_hz_calc_raw_in_hz_calc(
 _HZ_LABEL_I_GIVE_EXACT = re.compile(r"^I give$", re.I)
 _HZ_LABEL_XE_AMOUNT = re.compile(r"I give \(XE amount\)", re.I)
 _HZ_LABEL_ACTIV_TO = re.compile(r"Activ\s+to", re.I)
+_HZ_LABEL_ALIF_TJS = re.compile(r"^Alif\b", re.I)
 _HZ_ROW_AMOUNT_RE = re.compile(
     r"([\d][\d\s.,]*)\s*(TJS|EUR|USD)\b",
     re.I,
@@ -383,11 +384,75 @@ async def _read_eur_xe_from_inner_text(container: Locator | Page) -> str | None:
     return f"{match.group(1).strip()} EUR"
 
 
+async def select_alif_hz_calc(page: Page) -> None:
+    """Вкладка Alif в виджете. Activ эту кнопку не трогает."""
+    from core.payout_bank import is_alif
+
+    if not is_alif():
+        return
+    root = page.locator("#hz-calc").first
+    try:
+        await root.wait_for(state="visible", timeout=15_000)
+    except Exception as exc:
+        raise PanicError("hz-calc: виджет не появился, Alif не выбрать") from exc
+    chip = root.get_by_role("button", name=re.compile(r"^Alif$"))
+    if await chip.count() == 0:
+        chip = root.get_by_text(re.compile(r"^Alif$"))
+    if await chip.count() == 0:
+        raise PanicError("hz-calc: нет кнопки Alif")
+    await chip.first.click(timeout=5_000)
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        raw = await _read_labeled_in_hz_calc(root, _HZ_LABEL_ALIF_TJS, page=page)
+        if raw:
+            print(f"[PlatCore] hz-calc Alif: {raw}")
+            return
+        await page.wait_for_timeout(200)
+    raise PanicError("hz-calc: после кнопки Alif нет строки «Alif USD»")
+
+
+async def select_activ_hz_calc(page: Page) -> None:
+    """Вкладка Activ. Прошлый заход Alif оставляет виджет на Alif в том же профиле."""
+    from core.payout_bank import is_alif
+
+    if is_alif():
+        return
+    root = page.locator("#hz-calc").first
+    try:
+        await root.wait_for(state="visible", timeout=15_000)
+    except Exception as exc:
+        raise PanicError("hz-calc: виджет не появился, Activ не выбрать") from exc
+    try:
+        await page.evaluate("() => localStorage.setItem('hz_bank', 'activ')")
+    except Exception:
+        pass
+    chip = root.get_by_role("button", name=re.compile(r"^Activ$"))
+    if await chip.count() == 0:
+        chip = root.get_by_text(re.compile(r"^Activ$"))
+    if await chip.count() == 0:
+        raise PanicError("hz-calc: нет кнопки Activ")
+    await chip.first.click(timeout=5_000)
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        raw = await _read_labeled_in_hz_calc(root, _HZ_LABEL_ACTIV_TO, page=page)
+        if raw:
+            print(f"[PlatCore] hz-calc Activ: {raw}")
+            return
+        await page.wait_for_timeout(200)
+    raise PanicError("hz-calc: после кнопки Activ нет строки «Activ to»")
+
+
 async def try_read_tjs_field(
     container: Locator | Page,
     *,
     page: Page | None = None,
 ) -> str | None:
+    from core.payout_bank import is_alif
+
+    if is_alif():
+        return await _read_labeled_in_hz_calc(
+            container, _HZ_LABEL_ALIF_TJS, page=page
+        )
     raw = await _read_labeled_in_hz_calc(container, re.compile(r"Activ\s+to", re.I), page=page)
     if raw:
         return raw
@@ -725,7 +790,20 @@ async def read_credit_verify_with_source(
 
     Только из #hz-calc — никогда первый «I give» по всей модалке
     (там часто локальная валюта: 390 THB рядом с 11.55 USD).
+    Alif: только «I give» в USD, строку XE Activ не берём.
     """
+    from core.payout_bank import is_alif
+
+    if is_alif():
+        igive = await _read_hz_calc_raw_in_hz_calc(
+            container, _HZ_LABEL_I_GIVE_EXACT, page=page
+        )
+        if igive and is_parseable_amount(igive):
+            _, cur = parse_amount(igive)
+            if cur == "USD":
+                return igive, "USD", "I give USD (Alif)"
+        return None, "", ""
+
     raw = await _read_labeled_in_hz_calc(
         container, _HZ_LABEL_XE_AMOUNT, page=page
     )
@@ -796,6 +874,8 @@ async def refresh_deal_eur_from_platcore_page(
 
     await page.bring_to_front()
     await page.wait_for_timeout(500)
+    await select_alif_hz_calc(page)
+    await select_activ_hz_calc(page)
 
     hz_dump = await dump_hz_calc_on_screen(page)
     if hz_dump:
@@ -1043,6 +1123,15 @@ async def extract_and_verify_deal_from_card(
         block = await _find_post_accept_deal_block(page)
     if block is None:
         raise PanicError("PlatCore: post-accept модалка не найдена перед чтением")
+
+    from core.payout_bank import is_alif
+
+    if is_alif():
+        await select_alif_hz_calc(page)
+        pre_tjs = None
+        pre_eur = None
+    else:
+        await select_activ_hz_calc(page)
 
     account_raw, holder_raw, you_send_raw = await _read_post_accept_fields(block, page)
 

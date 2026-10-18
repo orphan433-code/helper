@@ -329,6 +329,23 @@ def skip_reason_for_card_bin(
     return f"BIN не из {', '.join(prefixes)}"
 
 
+def skip_reason_for_card_choice(
+    account_raw: str,
+    *,
+    allow_visa: bool = True,
+    allow_mastercard: bool = True,
+    bin_prefixes: list[str] | None = None,
+) -> str | None:
+    """BIN «Уходят» важнее Visa/MC. Иначе фильтр бренда режет MC BIN при Visa-only."""
+    if bin_prefixes:
+        return skip_reason_for_card_bin(account_raw, bin_prefixes)
+    return skip_reason_for_card_brand(
+        account_raw,
+        allow_visa=allow_visa,
+        allow_mastercard=allow_mastercard,
+    )
+
+
 def ignored_bank_prefixes(*bank_ids: str) -> tuple[str, ...]:
     """Все BIN банка из каталога: Visa + MC."""
     out: list[str] = []
@@ -346,8 +363,9 @@ def skip_reason_for_ignored_banks(
     *,
     skip_tbc: bool = False,
     skip_bog: bool = False,
+    skip_tjk: bool = False,
 ) -> str | None:
-    """TBC / BOG целиком не уходят — не принимать, если тумблер вкл."""
+    """TBC / BOG / ТЖК не уходят — не принимать, если тумблер вкл."""
     digits = "".join(ch for ch in (account_raw or "") if ch.isdigit())
     if not digits:
         return None
@@ -356,6 +374,8 @@ def skip_reason_for_ignored_banks(
         banks.append(("tbc", "TBC"))
     if skip_bog:
         banks.append(("bog", "BOG"))
+    if skip_tjk:
+        banks.append(("tjk", "ТЖК"))
     for bank_id, label in banks:
         for prefix in ignored_bank_prefixes(bank_id):
             if digits.startswith(prefix):
@@ -363,11 +383,10 @@ def skip_reason_for_ignored_banks(
     return None
 
 
-def session_requisites_key(account_raw: str, holder_raw: str) -> str:
-    """Ключ «карта + ФИО» в рамках одного прогона Accept."""
-    digits = "".join(ch for ch in (account_raw or "") if ch.isdigit())
-    holder = " ".join((holder_raw or "").split()).casefold()
-    return f"{digits}|{holder}"
+def session_requisites_key(account_raw: str, holder_raw: str = "") -> str:
+    """Ключ сессии Accept: номер карты. Имя не входит — опечатка не открывает вторую."""
+    _ = holder_raw
+    return "".join(ch for ch in (account_raw or "") if ch.isdigit())
 
 
 def skip_reason_for_session_duplicate(
@@ -377,8 +396,8 @@ def skip_reason_for_session_duplicate(
     requisites_in_run: dict[str, int],
 ) -> str | None:
     """
-    PlatCore не даёт принять вторую сделку с теми же реквизитами+именем,
-    пока первая ещё в pending. В одной сессии — сразу skip.
+    Та же карта уже принята в этом прогоне — skip.
+    Имя в ключ не берём: BELIAEVQ и BELIAEVA на одной карте это один повтор.
     """
     digits = "".join(ch for ch in (account_raw or "") if ch.isdigit())
     if not digits:

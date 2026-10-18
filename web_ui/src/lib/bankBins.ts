@@ -28,7 +28,21 @@ export const BANK_BINS: BankBinRow[] = [
     id: "tbc",
     name: "TBC Bank",
     visa: ["400881", "412742", "415479", "431570", "431571"],
-    mastercard: ["516185", "518974", "521026", "537493"],
+    mastercard: [
+      "515881",
+      "516185",
+      "518974",
+      "521026",
+      "535661",
+      "537493",
+      "559656",
+    ],
+  },
+  {
+    id: "tjk",
+    name: "ТЖК",
+    visa: [],
+    mastercard: ["548028"],
   },
 ];
 
@@ -40,11 +54,17 @@ export function allCatalogBins(): string[] {
   return BANK_BINS.flatMap(bankAllBins);
 }
 
-export const EXTRA_REDIRECT_BINS = ["537524", "557755"] as const;
+export const EXTRA_REDIRECT_BINS = [
+  "4098",
+  "410170",
+  "537524",
+  "557755",
+] as const;
 
 export const DEFAULT_DECLINE_BINS: string[] = BANK_BINS.flatMap((row) => {
   if (row.id === "tbc") return bankAllBins(row);
   if (row.id === "bog") return [...row.mastercard];
+  if (row.id === "tjk") return bankAllBins(row);
   return [];
 });
 

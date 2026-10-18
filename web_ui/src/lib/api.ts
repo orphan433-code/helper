@@ -26,6 +26,7 @@ type Api = {
   save_pipeline_dry_stop: (enabled: boolean) => Promise<Record<string, unknown>>;
   save_pipeline_skip_tbc: (enabled: boolean) => Promise<Record<string, unknown>>;
   save_pipeline_skip_bog: (enabled: boolean) => Promise<Record<string, unknown>>;
+  save_pipeline_skip_tjk: (enabled: boolean) => Promise<Record<string, unknown>>;
   start_pipeline: (
     max_deals: number,
     min_amount: string,
@@ -37,7 +38,12 @@ type Api = {
     pipeline_bin_prefixes?: string[],
     currencies?: string[],
     service?: string,
+    payout_bank?: string,
+    skip_tbc?: boolean,
+    skip_bog?: boolean,
+    skip_tjk?: boolean,
   ) => Promise<Record<string, unknown>>;
+  park_completion_deal: (order_id?: string) => Promise<Record<string, unknown>>;
   start_login: (service?: string) => Promise<Record<string, unknown>>;
   start_accept_names: (
     max_deals: number,

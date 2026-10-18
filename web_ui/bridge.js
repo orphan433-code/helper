@@ -91,7 +91,11 @@
         from_pending,
         pipeline_bin_prefixes,
         currencies,
-        service
+        service,
+        payout_bank,
+        skip_tbc,
+        skip_bog,
+        skip_tjk
       ) =>
         apiPost("/api/start_pipeline", {
           max_deals,
@@ -106,7 +110,13 @@
             : [],
           currencies: Array.isArray(currencies) ? currencies : [],
           service: service || undefined,
+          payout_bank: payout_bank || undefined,
+          skip_tbc,
+          skip_bog,
+          skip_tjk,
         }),
+      park_completion_deal: (order_id) =>
+        apiPost("/api/park_completion_deal", { order_id: order_id || "all" }),
       start_login: (service) =>
         apiPost("/api/start_login", { service: service || "hz" }),
       start_accept_names: (max_deals, min_amount, max_amount) =>
@@ -157,6 +167,8 @@
         apiPost("/api/save_pipeline_skip_tbc", { enabled: !!enabled }),
       save_pipeline_skip_bog: (enabled) =>
         apiPost("/api/save_pipeline_skip_bog", { enabled: !!enabled }),
+      save_pipeline_skip_tjk: (enabled) =>
+        apiPost("/api/save_pipeline_skip_tjk", { enabled: !!enabled }),
       start_redirect: (
         trader_ids,
         max_per_run,
@@ -325,7 +337,10 @@
   function connectWs() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(proto + "//" + location.host + "/ws");
-    ws.onopen = () => { wsRetryMs = 800; };
+    ws.onopen = () => {
+      wsRetryMs = 800;
+      window.dispatchEvent(new Event("tzk-resync"));
+    };
     ws.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch (_) { return; }

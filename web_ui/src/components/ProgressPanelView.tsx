@@ -89,6 +89,33 @@ export function ProgressPanelView({
       {panel.message && !panel.done && !busyVisual && (
         <p className="relative mt-2 text-sm text-muted-foreground">{panel.message}</p>
       )}
+      {mode === "receipts" &&
+        panel.allowCancel &&
+        panel.deals.some((d) => d.can_park) && (
+          <div className="mt-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={panel.phase === "processing"}
+              onClick={() => {
+                void (async () => {
+                  const ok = await useConsole.getState().openDialog({
+                    title: "В ожидание",
+                    body: "Все сделки без чека уйдут из цикла. С чеком останутся.",
+                    confirmLabel: "В ожидание",
+                  });
+                  if (!ok) return;
+                  await apiCall(
+                    () => api().park_completion_deal("all"),
+                    (e) => useConsole.getState().appendLog(`[ОШИБКА] ${e}`),
+                  );
+                })();
+              }}
+            >
+              Все без чека — в ожидание
+            </Button>
+          </div>
+        )}
       {panel.deals.length > 0 && (
         <ul className={cn("relative space-y-1.5", showBar || panel.message ? "mt-2" : "")}>
           {panel.deals.map((d) => (
@@ -111,7 +138,24 @@ export function ProgressPanelView({
   );
 }
 
-function statusMeta(state: string, previewHint?: string, error?: string) {
+function statusMeta(
+  state: string,
+  previewHint?: string,
+  error?: string,
+  smsCancel?: boolean,
+) {
+  if (smsCancel) {
+    return {
+      label: "отмена",
+      className: "bg-danger-soft text-danger border border-danger/25",
+    };
+  }
+  if (state === "skipped") {
+    return {
+      label: "пропуск — Отмена",
+      className: "bg-amber-50 text-amber-800 border border-amber-200",
+    };
+  }
   if (previewHint) {
     const ready =
       previewHint.includes("найден") ||
@@ -124,13 +168,10 @@ function statusMeta(state: string, previewHint?: string, error?: string) {
         : "bg-slate-100 text-slate-700",
     };
   }
-  if (error && (state === "error" || state === "skipped")) {
+  if (error && state === "error") {
     return {
-      label: error,
-      className:
-        state === "skipped"
-          ? "bg-amber-50 text-amber-800 border border-amber-200"
-          : "bg-danger-soft text-danger border border-danger/20",
+      label: error.length > 72 ? "ошибка" : error,
+      className: "bg-danger-soft text-danger border border-danger/20",
     };
   }
   switch (state) {
@@ -175,6 +216,11 @@ function statusMeta(state: string, previewHint?: string, error?: string) {
       return {
         label: "пропуск — Отмена",
         className: "bg-amber-50 text-amber-800 border border-amber-200",
+      };
+    case "parked":
+      return {
+        label: "в ожидании",
+        className: "bg-slate-100 text-slate-600 border border-slate-200",
       };
     case "cancelling":
       return {
@@ -221,9 +267,12 @@ function DealItem({
       state === "uploading" ||
       (state === "error" && !!d.has_shot));
 
-  const showRetry = mode === "receipts" && allowCancel && !!d.can_retry && !!d.order_id;
-  const showRescan = mode === "receipts" && allowCancel && !!d.can_rescan && !!d.order_id;
-  const showCancel = mode === "receipts" && allowCancel && !!d.can_cancel && !!d.order_id;
+  const actionsLocked =
+    state === "error" ? false : actionsDisabled || !allowCancel;
+  const showRetry = mode === "receipts" && !!d.can_retry && !!d.order_id;
+  const showRescan = mode === "receipts" && !!d.can_rescan && !!d.order_id;
+  const showCancel = mode === "receipts" && !!d.can_cancel && !!d.order_id;
+  const showPark = mode === "receipts" && !!d.can_park && !!d.order_id;
 
   const meta = statusMeta(
     state,
@@ -236,6 +285,7 @@ function DealItem({
             : undefined)
       : undefined,
     d.error,
+    !!d.sms_cancel,
   );
 
   const onErr = (e: string) => appendLog(`[ОШИБКА] ${e}`);
@@ -274,15 +324,30 @@ function DealItem({
     await apiCall(() => api().rescan_completion_deal(d.order_id!), onErr);
   };
 
+  const parkDeal = async () => {
+    if (!d.order_id) return;
+    const ok = await openDialog({
+      title: "В ожидание",
+      body: `№${d.index} · ${d.card || "карта?"} уйдёт из цикла. Чек не крепим.`,
+      confirmLabel: "В ожидание",
+    });
+    if (!ok) return;
+    await apiCall(() => api().park_completion_deal(d.order_id!), onErr);
+  };
+
   return (
     <li
       className={cn(
         "rounded-lg border bg-white px-3 py-2.5 text-xs transition-colors",
-        d.active && "border-ok/25 bg-ok-soft/40",
-        state === "uploading" && "border-amber-300/70 bg-amber-50/60",
-        (state === "paid" || state === "done") && "border-ok/25 bg-ok-soft/60",
-        state === "skipped" && "opacity-80 border-border",
-        state !== "paid" &&
+        d.sms_cancel && "border-danger/40 bg-danger-soft/70",
+        !d.sms_cancel && d.active && "border-ok/25 bg-ok-soft/40",
+        !d.sms_cancel && state === "uploading" && "border-amber-300/70 bg-amber-50/60",
+        !d.sms_cancel &&
+          (state === "paid" || state === "done") &&
+          "border-ok/25 bg-ok-soft/60",
+        !d.sms_cancel && state === "skipped" && "opacity-80 border-border",
+        !d.sms_cancel &&
+          state !== "paid" &&
           state !== "done" &&
           state !== "skipped" &&
           state !== "uploading" &&
@@ -292,8 +357,20 @@ function DealItem({
     >
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-2">
         <div className="min-w-0 space-y-1.5">
-          <div className="truncate font-semibold text-sm leading-snug">
-            <span className="mr-1.5 font-mono text-muted-foreground">#{d.index}</span>
+          <div
+            className={cn(
+              "truncate text-sm font-semibold leading-snug",
+              d.sms_cancel && "text-danger",
+            )}
+          >
+            <span
+              className={cn(
+                "mr-1.5 font-mono",
+                d.sms_cancel ? "text-danger/70" : "text-muted-foreground",
+              )}
+            >
+              #{d.index}
+            </span>
             {d.holder || "—"}
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
@@ -332,17 +409,32 @@ function DealItem({
 
         <div className="flex shrink-0 flex-col items-end gap-2">
           {d.amount && (
-            <span className="whitespace-nowrap font-mono text-sm font-semibold text-stone-800">
+            <span
+              className={cn(
+                "whitespace-nowrap font-mono text-sm font-semibold",
+                d.sms_cancel ? "text-danger" : "text-stone-800",
+              )}
+            >
               {d.amount}
             </span>
           )}
-          {(showRetry || showRescan || showCancel) && (
+          {(showRetry || showRescan || showCancel || showPark) && (
             <div className="flex flex-wrap justify-end gap-1.5">
+              {showPark && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={actionsLocked}
+                  onClick={() => void parkDeal()}
+                >
+                  В ожидание
+                </Button>
+              )}
               {showRetry && (
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={actionsDisabled}
+                  disabled={actionsLocked}
                   onClick={() => void retryDeal()}
                 >
                   Повторить
@@ -352,7 +444,7 @@ function DealItem({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={actionsDisabled}
+                  disabled={actionsLocked}
                   onClick={() => void rescanDeal()}
                 >
                   Новый файл
@@ -362,7 +454,7 @@ function DealItem({
                 <Button
                   size="sm"
                   variant="danger"
-                  disabled={actionsDisabled}
+                  disabled={actionsLocked}
                   onClick={() => void cancelDeal()}
                 >
                   Отменить

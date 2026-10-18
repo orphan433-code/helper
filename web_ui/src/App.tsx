@@ -37,6 +37,7 @@ export default function App() {
       void boot();
     };
     window.addEventListener("pywebviewready", onReady);
+    window.addEventListener("tzk-resync", onReady);
     if (window.pywebview?.api) void boot();
 
     let pollBusy = false;
@@ -73,6 +74,7 @@ export default function App() {
 
     return () => {
       window.removeEventListener("pywebviewready", onReady);
+      window.removeEventListener("tzk-resync", onReady);
       window.clearInterval(poll);
       window.clearInterval(idleWatch);
     };

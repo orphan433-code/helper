@@ -6,8 +6,10 @@ import unittest
 from types import SimpleNamespace
 
 from completion.session import CompletionSession, DealCompletionState, SessionDeal
+from platcore.api_dispute import pick_dispute_deal_id
 from ui.progress import (
     PipelineProgressTracker,
+    next_ui_index,
     notify_completion_progress,
     set_completion_progress_handler,
     set_pipeline_progress_handler,
@@ -114,6 +116,61 @@ class GuiProgressTests(unittest.TestCase):
         self.assertEqual(last["deals"][0]["state"], "paid")
         self.assertEqual(last["deals"][0]["card"], "*3456")
         self.assertIn("Выплачено 1 из 7", last["message"])
+
+    def test_skipped_cancel_before_first_scan(self) -> None:
+        received: list[dict] = []
+        session = CompletionSession(
+            cancel_unlocked=False,
+            deals=[
+                SessionDeal(
+                    index=1,
+                    order_id="skip-1",
+                    account_digits="1111222233334444",
+                    holder_name="SKIP",
+                    state=DealCompletionState.SKIPPED,
+                    error="Перевод не выполнен",
+                ),
+                SessionDeal(
+                    index=2,
+                    order_id="wait-2",
+                    account_digits="5555666677778888",
+                    state=DealCompletionState.AWAITING_PROOF,
+                ),
+                SessionDeal(
+                    index=3,
+                    order_id="park-3",
+                    account_digits="9999000011112222",
+                    state=DealCompletionState.PARKED,
+                ),
+            ],
+        )
+        set_completion_progress_handler(received.append)
+        try:
+            notify_completion_progress(session, phase="waiting", allow_cancel=True)
+        finally:
+            set_completion_progress_handler(None)
+
+        self.assertEqual(len(received), 1)
+        deals = received[0]["deals"]
+        self.assertEqual([d["index"] for d in deals], [1, 2])
+        self.assertEqual(deals[0]["state"], "skipped")
+        self.assertTrue(deals[0]["can_cancel"])
+        self.assertEqual(deals[0]["hint"], "пропуск — Отмена")
+        self.assertFalse(deals[1]["can_cancel"])
+        self.assertEqual(received[0]["total"], 2)
+
+    def test_next_ui_index_keeps_skipped_row(self) -> None:
+        tracker = PipelineProgressTracker(total=2)
+        tracker.mark_skipped(1, "Перевод не выполнен")
+        accepted = [SimpleNamespace(index=1)]
+        self.assertEqual(next_ui_index(accepted, tracker), 2)
+
+    def test_dispute_id_prefers_real_uuid(self) -> None:
+        label = "07:28:23_- 189 EUR_4165984618060436_NAME"
+        deal = "98294e98-3757-4801-ba2e-ef5356802eee"
+        self.assertEqual(pick_dispute_deal_id(label, deal), deal)
+        self.assertEqual(pick_dispute_deal_id(deal, "A68045166442"), deal)
+        self.assertEqual(pick_dispute_deal_id(label, "A68045166442"), "")
 
 
 if __name__ == "__main__":

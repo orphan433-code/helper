@@ -180,6 +180,21 @@ def preview_receipt_readiness(
     cfg = cfg if cfg is not None else active_cfg
     if session is None:
         return {"ok": False, "error": "Фаза чеков не активна", "deals": []}
+    from core.payout_bank import use_payout_bank
+
+    with use_payout_bank(getattr(session, "payout_bank", "activ")):
+        return _preview_receipt_body(session, cfg)
+
+
+def _preview_receipt_body(
+    session: CompletionSession | None = None,
+    cfg: dict | None = None,
+) -> dict[str, Any]:
+    active, active_cfg = get_active_completion_session()
+    session = session or active
+    cfg = cfg if cfg is not None else active_cfg
+    if session is None:
+        return {"ok": False, "error": "Фаза чеков не активна", "deals": []}
 
     screens_dir = proofs_dir(cfg)
     downloads_dir = videos_dir(cfg)
@@ -498,6 +513,12 @@ async def _complete_one_matched_deal(
     raise_if_stopped()
     try:
         def _progress(msg: str, *, _idx: int = deal.index) -> None:
+            if deal.state in (
+                DealCompletionState.FAILED,
+                DealCompletionState.COMPLETED,
+                DealCompletionState.CANCELLED,
+            ):
+                return
             notify_completion_progress(
                 session,
                 phase="processing",
@@ -576,8 +597,8 @@ async def _complete_one_matched_deal(
         raise
     except Exception as exc:
         deal.state = DealCompletionState.FAILED
-        deal.error = str(exc)
-        error(f"#{deal.index}: {exc}")
+        deal.error = str(exc).strip() or "сервер не ответил на загрузку чека"
+        error(f"#{deal.index}: {deal.error}")
         notify_completion_progress(
             session,
             phase="waiting",
@@ -816,6 +837,74 @@ async def scan_and_complete_once(
     return len(matches)
 
 
+def _park_record(deal: SessionDeal, *, video_min_usdt: float) -> dict[str, Any]:
+    from core.deals_ui_local import pipeline_ui_service
+
+    digits = "".join(ch for ch in (deal.account_digits or "") if ch.isdigit())
+    amount = float(deal.amount_usdt or 0)
+    return {
+        "order_id": deal.order_id,
+        "task_id": deal.task_id,
+        "index": deal.index,
+        "card": f"*{digits[-4:]}" if len(digits) >= 4 else "",
+        "account_digits": digits,
+        "holder_name": deal.holder_name,
+        "amount_tjs": deal.amount_tjs,
+        "amount_target": deal.amount_target,
+        "amount_usdt": deal.amount_usdt,
+        "give_fiat": deal.give_fiat,
+        "needs_video": amount > float(video_min_usdt),
+        "ledger": deal.ledger or {},
+        "service": pipeline_ui_service(),
+    }
+
+
+async def _park_alif_deals(
+    session: CompletionSession,
+    target: str,
+    *,
+    quiet_empty: bool = False,
+) -> None:
+    """Сделки без чека в очередь «Ожидание». Цикл их больше не ждёт."""
+    from completion.alif_wait import park_waiting
+    from core.payout_bank import is_alif
+
+    if not is_alif():
+        warn("В ожидание только на цикле Alif")
+        return
+    if target == "all":
+        deals = [
+            d
+            for d in session.deals
+            if d.state == DealCompletionState.AWAITING_PROOF and not d.proof_path
+        ]
+    else:
+        found = find_session_deal(session, target)
+        deals = [found] if found is not None else []
+    if not deals:
+        if not quiet_empty:
+            warn(f"В ожидание: нечего парковать ({target or '—'})")
+        return
+    parked = 0
+    for deal in deals:
+        if deal.state != DealCompletionState.AWAITING_PROOF or deal.proof_path:
+            warn(f"#{deal.index}: в ожидание не ушла (уже есть чек или другой статус)")
+            continue
+        park_waiting(_park_record(deal, video_min_usdt=session.video_min_usdt))
+        deal.state = DealCompletionState.PARKED
+        parked += 1
+        info(
+            f"#{deal.index} {_card_tag(deal.account_digits)} → ожидание "
+            f"({deal.order_id})"
+        )
+    notify_completion_progress(
+        session,
+        phase="waiting",
+        message=f"В ожидании {parked}. Можно дальше платить.",
+        allow_cancel=True,
+    )
+
+
 async def cancel_deal_on_platcore(
     session: CompletionSession,
     order_id: str,
@@ -904,7 +993,7 @@ async def cancel_deal_on_platcore(
         notify_completion_progress(
             session,
             phase="waiting",
-            message=f"#{deal.index}: ошибка отмены — Повторить или Отмена",
+            message=f"#{deal.index}: ошибка отмены — «Отмена» ещё раз",
             allow_cancel=True,
             active_index=deal.index,
         )
@@ -1050,7 +1139,12 @@ async def _run_completion_phase_body(
                 f"(только чек: {n_shot}, чек+видео: {n_video})"
             )
         info(f"Ждём новые файлы (игнор старых {grace_sec:g} с)")
-        info("После скана: без чека — «Отмена»; ошибка с чеком — «Повторить»")
+        from core.payout_bank import is_alif
+
+        if is_alif():
+            info("Alif: «Загрузить» забирает чеки из папки, без чека — в ожидание")
+        else:
+            info("После скана: без чека — «Отмена»; ошибка с чеком — «Повторить»")
     if n_skipped:
         info(f"Пропуск банка: {n_skipped} — серые, можно «Отмена»")
     print_session_status(session)
@@ -1069,7 +1163,7 @@ async def _run_completion_phase_body(
         session,
         phase="waiting",
         message=start_msg,
-        allow_cancel=False,
+        allow_cancel=True,
     )
 
     while session.unresolved():
@@ -1107,12 +1201,18 @@ async def _run_completion_phase_body(
             session,
             phase="waiting",
             message=wait_msg,
-            allow_cancel=session.cancel_unlocked,
+            allow_cancel=True,
         )
         confirm_kind = await wait_user_confirm(confirm_hint)
         raise_if_stopped()
 
         kind = _normalize_confirm_kind(confirm_kind or "receipts")
+        if kind.startswith("park:"):
+            target = kind.split(":", 1)[1].strip()
+            await _park_alif_deals(session, target)
+            print_session_status(session)
+            continue
+
         if kind.startswith("cancel:"):
             order_id = kind.split(":", 1)[1].strip()
             await cancel_deal_on_platcore(
@@ -1173,17 +1273,26 @@ async def _run_completion_phase_body(
             page_by_order=page_by_order,
             cfg=cfg,
         )
+        from core.payout_bank import is_alif
+
+        if is_alif():
+            await _park_alif_deals(session, "all", quiet_empty=True)
         print_session_status(session)
 
     done = session.completed_count()
     cancelled = session.cancelled_count()
+    parked = sum(1 for d in session.deals if d.state == DealCompletionState.PARKED)
     failed = sum(1 for d in session.deals if d.state == DealCompletionState.FAILED)
+    parked_bit = f", в ожидании {parked}" if parked else ""
     if failed:
         msg = (
             f"Готово: {done}/{len(session.deals)}"
             + (f", отмен: {cancelled}" if cancelled else "")
             + f", ошибок: {failed}"
+            + parked_bit
         )
+    elif parked:
+        msg = f"Готово: {done}/{len(session.deals)}{parked_bit}"
     elif cancelled:
         msg = (
             f"Готово: {done}/{len(session.deals)} "
@@ -1192,7 +1301,7 @@ async def _run_completion_phase_body(
     else:
         msg = f"Все {len(session.deals)} чеков загружены успешно"
     notify_completion_progress(session, phase="done", message=msg)
-    ok(f"Фаза чеков завершена ({done}/{len(session.deals)})")
+    ok(f"Фаза чеков завершена ({done}/{len(session.deals)}{parked_bit})")
     pipe_cfg = cfg.get("pipeline") or {}
     if not pipe_cfg.get("exit_after_run", True):
         info("Браузер останется открытым до следующего запуска (exit_after_run=false)")

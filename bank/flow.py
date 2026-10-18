@@ -126,11 +126,11 @@ def _resolve_transfer_data(
     from_deal: bool = False,
 ) -> TransferFormData | None:
     if account and holder and amount is not None:
-        from core.validators import sanitize_holder_name_for_bank
+        from core.deal_bridge import holder_for_bank
 
         return TransferFormData(
             account=account.strip(),
-            holder_name=sanitize_holder_name_for_bank(holder.strip()),
+            holder_name=holder_for_bank(holder.strip()),
             amount_tjs=float(amount),
             amount_eur=float(amount_eur) if amount_eur is not None else None,
         )
@@ -152,6 +152,9 @@ def run_bank_flow(
     verbose: bool = True,
     handoff_started_at: float | None = None,
 ) -> None:
+    from core.payout_bank import is_alif
+
+    alif = is_alif()
     region = capture_region_or_raise()
     if region is None:
         raise PinUnlockError("capture_region не задан")
@@ -197,13 +200,23 @@ def run_bank_flow(
             elif verbose and result.action == "skipped":
                 print(f"[INFO] Этап 1: пропущен — {result.message}")
 
-    if run_nav:
+    if run_nav and not alif:
         run_stage2_payments(
             region=region,
             verbose=verbose,
             initial_hits=handoff_hits,
             handoff_fast=handoff_fast,
         )
+
+    if run_form and alif:
+        if transfer is None:
+            if verbose:
+                print("[INFO] Alif: нет реквизитов, форму не заполняем")
+            return
+        from bank.alif_flow import run_alif_transfer
+
+        run_alif_transfer(transfer, region=region, verbose=verbose)
+        return
 
     if run_form:
         if transfer is None:

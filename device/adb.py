@@ -444,6 +444,7 @@ def type_digits_raw(text: str, *, gap_sec: float = 0.06) -> None:
     Ввод суммы/цифр через keyevent — работает на numeric Gboard.
 
     `input text` после смены клавы на цифры часто молча ничего не пишет.
+    Каждая цифра — отдельный adb. Activ так и оставляет: IME не глотает.
     """
     import time
 
@@ -456,6 +457,30 @@ def type_digits_raw(text: str, *, gap_sec: float = 0.06) -> None:
         keyevent(code)
         if gap_sec > 0:
             time.sleep(gap_sec)
+
+
+def digits_keyevent_script(text: str, *, gap_sec: float = 0.02) -> str:
+    """Один shell: keyevent подряд, короткая пауза на устройстве между цифрами."""
+    parts: list[str] = []
+    for ch in text:
+        code = _DIGIT_KEYCODES.get(ch)
+        if code is None:
+            raise RuntimeError(f"type_digits_burst: неподдерживаемый символ {ch!r}")
+        parts.append(f"input keyevent {code}")
+    if not parts:
+        return ""
+    if gap_sec > 0:
+        pause = f"sleep {gap_sec:.3f}"
+        return f"; {pause}; ".join(parts)
+    return "; ".join(parts)
+
+
+def type_digits_burst(text: str, *, gap_sec: float = 0.02) -> None:
+    """Цифры одним adb. Пауза между клавишами на телефоне, не новый процесс на цифру."""
+    if not text:
+        return
+    script = digits_keyevent_script(text, gap_sec=gap_sec)
+    run_adb(["shell", script], check=True)
 
 
 def keyevent(code: str) -> None:

@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from playwright.async_api import BrowserContext, Page
 
 from core.deal_bridge import save_pending_deal
-from ui.progress import PipelineProgressTracker
+from ui.progress import PipelineProgressTracker, next_ui_index
 from core.human import HumanTiming, human_click, parse_human_timing
 from ui.job_control import JobStopped, raise_if_stopped
 from core.logkit import debug, info, ok, section, warn
@@ -43,6 +43,7 @@ from core.deals_ui_local import (
     pipeline_ui_bin_prefixes,
     pipeline_ui_skip_bog,
     pipeline_ui_skip_tbc,
+    pipeline_ui_skip_tjk,
 )
 from core.pipeline_currencies import (
     fiat_code_from_amount_raw,
@@ -54,8 +55,7 @@ from core.validators import (
     deal_to_dict,
     parse_amount_value,
     session_requisites_key,
-    skip_reason_for_card_bin,
-    skip_reason_for_card_brand,
+    skip_reason_for_card_choice,
     skip_reason_for_preview,
     skip_reason_for_session_duplicate,
     skip_reason_for_ignored_banks,
@@ -171,6 +171,10 @@ async def claim_one_pending(
             list_page, preview, val_cfg, block=modal
         )
     except PanicError:
+        from core.payout_bank import is_alif
+
+        if is_alif():
+            raise
         info("Не прочитали модалку — беру реквизиты из строки списка")
         deal = preview_to_deal(preview, val_cfg)
 
@@ -240,6 +244,7 @@ async def claim_pending_deals_loop(
     bin_prefixes = pipeline_ui_bin_prefixes()
     skip_tbc = pipeline_ui_skip_tbc()
     skip_bog = pipeline_ui_skip_bog()
+    skip_tjk = pipeline_ui_skip_tjk()
     monitor_url = pending_monitor_url(str(dash_cfg.get("monitor_url") or ""))
 
     seen: set[str] = set()
@@ -272,6 +277,8 @@ async def claim_pending_deals_loop(
         info(f"Пропуск TBC: {', '.join(p + '*' for p in ignored_bank_prefixes('tbc'))}")
     if skip_bog:
         info(f"Пропуск BOG: {', '.join(p + '*' for p in ignored_bank_prefixes('bog'))}")
+    if skip_tjk:
+        info(f"Пропуск ТЖК: {', '.join(p + '*' for p in ignored_bank_prefixes('tjk'))}")
     if bin_prefixes:
         info(f"BIN: только {', '.join(p + '*' for p in bin_prefixes)}")
     brands = []
@@ -328,7 +335,10 @@ async def claim_pending_deals_loop(
                 continue
 
             skip_bank = skip_reason_for_ignored_banks(
-                preview.account_raw, skip_tbc=skip_tbc, skip_bog=skip_bog
+                preview.account_raw,
+                skip_tbc=skip_tbc,
+                skip_bog=skip_bog,
+                skip_tjk=skip_tjk,
             )
             if skip_bank:
                 info(
@@ -348,25 +358,16 @@ async def claim_pending_deals_loop(
                 seen.add(preview.fingerprint)
                 continue
 
-            if bin_prefixes:
-                skip_bin = skip_reason_for_card_bin(
-                    preview.account_raw, bin_prefixes
-                )
-                if skip_bin:
-                    info(
-                        f"Пропуск (BIN): {preview.account_raw or '—'} — {skip_bin}"
-                    )
-                    seen.add(preview.fingerprint)
-                    continue
-
-            skip_card = skip_reason_for_card_brand(
+            skip_card = skip_reason_for_card_choice(
                 preview.account_raw,
                 allow_visa=allow_visa,
                 allow_mastercard=allow_mc,
+                bin_prefixes=bin_prefixes,
             )
             if skip_card:
+                kind = "BIN" if bin_prefixes else "фильтр карты"
                 info(
-                    f"Пропуск (фильтр карты): {preview.account_raw or '—'} — {skip_card}"
+                    f"Пропуск ({kind}): {preview.account_raw or '—'} — {skip_card}"
                 )
                 seen.add(preview.fingerprint)
                 continue
@@ -397,7 +398,7 @@ async def claim_pending_deals_loop(
 
             debug(f"Pending: {preview.fingerprint}")
             seen.add(preview.fingerprint)
-            next_index = spawned + 1
+            next_index = next_ui_index(accepted_deals, progress)
 
             try:
                 accepted = await claim_one_pending(
@@ -575,7 +576,11 @@ async def claim_pending_deals_loop(
                     break
 
             if not bank_ok:
-                debug(f"#{accepted.index}: банк skip — в фазе чеков будет Отмена")
+                spawned = max(0, spawned - 1)
+                info(
+                    f"#{accepted.index}: пропуск — слот свободен, следующая pending. "
+                    "Эту потом «Отмена»"
+                )
 
             if spawned < max_deals and spawn_delay > 0:
                 await asyncio.sleep(spawn_delay)

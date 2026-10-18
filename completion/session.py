@@ -18,6 +18,7 @@ class DealCompletionState(str, Enum):
     CANCELLED = "cancelled"
     FAILED = "failed"
     SKIPPED = "skipped"  # Accept был, банк нет — серая, ждёт Отмену
+    PARKED = "parked"  # Alif: без чека, висит в «Ожидание», цикл не держит
 
 
 @dataclass
@@ -49,6 +50,8 @@ class CompletionSession:
     # Отмена в UI только после первого скана/обработки чеков (или чек+видео)
     cancel_unlocked: bool = False
     video_min_usdt: float = 225.0
+    # Какой разбор чека: превью идёт не в потоке цикла, контекст туда не доезжает.
+    payout_bank: str = "activ"
 
     def pending(self) -> list[SessionDeal]:
         return [
@@ -161,8 +164,11 @@ def build_session(
                 ],
             )
         )
+    from core.payout_bank import payout_bank
+
     return CompletionSession(
         deals=deals,
         watch_started_at=time.time() - grace_sec,
         video_min_usdt=threshold,
+        payout_bank=payout_bank(),
     )

@@ -15,6 +15,7 @@ from core.deals_ui_local import (
     pipeline_ui_dry_stop,
     pipeline_ui_skip_bog,
     pipeline_ui_skip_tbc,
+    pipeline_ui_skip_tjk,
 )
 from core.decline_hosts import DECLINE_SERVICE_EZE, DECLINE_SERVICE_URLS
 from core.logkit import info, ok, section, warn
@@ -57,11 +58,13 @@ from platcore.pipeline import (
     pay_accepted_deal,
 )
 from ui.job_control import JobStopped, raise_if_stopped
-from ui.progress import PipelineProgressTracker
+from ui.progress import PipelineProgressTracker, next_ui_index
 from ui.prompts import wait_user_confirm
 
 _EZE_ACCEPT_OK = frozenset({200, 204})
 _EZE_ACCEPT_LIE = frozenset({400, 409})
+_EZE_VERIFY_ATTEMPTS = 3
+_EZE_VERIFY_PAUSE_SEC = 2.0
 
 
 def _row_ids(rows: list[dict[str, Any]]) -> set[str]:
@@ -84,6 +87,35 @@ def eze_accept_looks_taken(
     return True
 
 
+async def _fetch_pending_and_new(
+    base_url: str,
+    token: str,
+    order_id: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    last: Exception | None = None
+    for attempt in range(1, _EZE_VERIFY_ATTEMPTS + 1):
+        try:
+            pending = await asyncio.to_thread(
+                fetch_find_new_rows, base_url, token, status="pending"
+            )
+            news = await asyncio.to_thread(
+                fetch_find_new_rows, base_url, token, status="new"
+            )
+            return pending, news
+        except PanicError as exc:
+            last = exc
+            if attempt < _EZE_VERIFY_ATTEMPTS:
+                warn(
+                    f"EZE проверка {order_id}: {exc} — "
+                    f"повтор {attempt}/{_EZE_VERIFY_ATTEMPTS}"
+                )
+                await asyncio.sleep(_EZE_VERIFY_PAUSE_SEC * attempt)
+    raise PanicError(
+        f"EZE {order_id}: не проверил pending/new ({last}). "
+        "Accept мог пройти — проверь сделку в кабинете"
+    )
+
+
 async def confirm_eze_put_accept(
     base_url: str,
     token: str,
@@ -97,12 +129,7 @@ async def confirm_eze_put_accept(
         return
     if code in _EZE_ACCEPT_LIE:
         warn(f"EZE PUT /accept {order_id} HTTP {code} — проверяю pending/new")
-        pending = await asyncio.to_thread(
-            fetch_find_new_rows, base_url, token, status="pending"
-        )
-        news = await asyncio.to_thread(
-            fetch_find_new_rows, base_url, token, status="new"
-        )
+        pending, news = await _fetch_pending_and_new(base_url, token, order_id)
         if eze_accept_looks_taken(
             deal_id,
             pending_ids=_row_ids(pending),
@@ -312,12 +339,15 @@ async def accept_deals_loop_eze(
     bin_prefixes = pipeline_ui_bin_prefixes()
     skip_tbc = pipeline_ui_skip_tbc()
     skip_bog = pipeline_ui_skip_bog()
+    skip_tjk = pipeline_ui_skip_tjk()
     section(f"EZE Accept: до {max_deals} сделок, без HZ ledger")
     info("Валютный фильтр HZ (EUR/THB/TRY) не применяем")
     if skip_tbc:
         info(f"Пропуск TBC: {', '.join(p + '*' for p in ignored_bank_prefixes('tbc'))}")
     if skip_bog:
         info(f"Пропуск BOG: {', '.join(p + '*' for p in ignored_bank_prefixes('bog'))}")
+    if skip_tjk:
+        info(f"Пропуск ТЖК: {', '.join(p + '*' for p in ignored_bank_prefixes('tjk'))}")
     if bin_prefixes:
         info(f"BIN: только {', '.join(p + '*' for p in bin_prefixes)}")
 
@@ -361,6 +391,7 @@ async def accept_deals_loop_eze(
                 requisites_in_run=requisites_in_run,
                 skip_tbc=skip_tbc,
                 skip_bog=skip_bog,
+                skip_tjk=skip_tjk,
             )
             if skip:
                 info(
@@ -371,7 +402,7 @@ async def accept_deals_loop_eze(
                 continue
 
             seen.add(deal_id)
-            next_index = spawned + 1
+            next_index = next_ui_index(accepted_deals, progress)
             preview = _preview_from_row(row)
             progress.start_accept(next_index, preview)
             info(f"EZE Accept #{next_index}: {row.get('orderId')} {_row_fiat_code(row)}")
@@ -402,9 +433,14 @@ async def accept_deals_loop_eze(
                 bank_ok = await pay_accepted_deal(
                     accepted, cfg, progress=progress
                 )
-            spawned += 1
             empty_passes = 0
             picked = True
+            if not bank_ok and not accepted.dry_stop:
+                info(
+                    f"#{accepted.index}: пропуск — слот свободен, следующая сделка"
+                )
+                continue
+            spawned += 1
             if not bank_ok:
                 break
             if spawned < max_deals and spawn_delay > 0:

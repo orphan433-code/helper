@@ -78,6 +78,8 @@ from ui.settings import (
     apply_pipeline_skip_tbc,
     pipeline_skip_bog_setting,
     apply_pipeline_skip_bog,
+    pipeline_skip_tjk_setting,
+    apply_pipeline_skip_tjk,
     redirect_amount_settings,
     apply_redirect_amounts,
     redirect_filter_settings,
@@ -121,6 +123,103 @@ _PYTHON_CANDIDATES = (
     ROOT.parent / ".venv" / "bin" / "python",
 )
 PYTHON = next((p for p in _PYTHON_CANDIDATES if p.is_file()), _PYTHON_CANDIDATES[0])
+
+
+def _alif_state() -> dict[str, Any]:
+    from core.deals_ui_local import alif_saved_block
+    from core.decline_hosts import normalize_decline_service
+
+    block = alif_saved_block()
+    toggles = block.get("bin_toggles") if isinstance(block.get("bin_toggles"), dict) else {}
+    raw_cur = block.get("currencies") if isinstance(block.get("currencies"), list) else []
+    try:
+        deals = int(block.get("max_deals") or 5)
+    except (TypeError, ValueError):
+        deals = 5
+    try:
+        passes = int(block.get("empty_passes") or 2)
+    except (TypeError, ValueError):
+        passes = 2
+    return {
+        "max_deals": max(1, min(50, deals)),
+        "max_empty_list_passes": max(1, min(20, passes)),
+        "min_amount": str(block.get("min_amount") or ""),
+        "max_amount": str(block.get("max_amount") or ""),
+        "allow_visa": bool(block.get("allow_visa", True)),
+        "allow_mastercard": bool(block.get("allow_mastercard", False)),
+        "currencies": [str(c).strip().upper() for c in raw_cur if str(c).strip()],
+        "from_pending": bool(block.get("from_pending", False)),
+        "service": normalize_decline_service(block.get("service")),
+        "skip_tbc": bool(block.get("skip_tbc", True)),
+        "skip_bog": bool(block.get("skip_bog", True)),
+        "skip_tjk": bool(block.get("skip_tjk", True)),
+        "bin_toggles": {p: bool(toggles.get(p)) for p in PIPELINE_BIN_PREFIXES},
+    }
+
+
+def _alif_waiting_public() -> list[dict[str, Any]]:
+    from completion.alif_wait import list_waiting
+
+    fields = (
+        "order_id",
+        "card",
+        "holder_name",
+        "amount_tjs",
+        "amount_target",
+        "give_fiat",
+        "parked_at",
+        "index",
+        "needs_video",
+    )
+    return [{key: row.get(key) for key in fields} for row in list_waiting()]
+
+
+def _save_alif_from_body(
+    *,
+    max_deals: int,
+    min_amount: str,
+    max_amount: str,
+    allow_visa: bool,
+    allow_mastercard: bool,
+    max_empty_list_passes: int,
+    from_pending: bool,
+    pipeline_bin_prefixes: list[str] | None,
+    currencies: list[str] | None,
+    service: str | None,
+    skip_tbc: bool | None = None,
+    skip_bog: bool | None = None,
+    skip_tjk: bool | None = None,
+) -> str:
+    from core.deals_ui_local import _patch_section, alif_saved_block
+    from core.decline_hosts import normalize_decline_service
+
+    current = alif_saved_block()
+    wanted = {
+        "".join(ch for ch in str(x) if ch.isdigit())
+        for x in (pipeline_bin_prefixes or [])
+        if str(x).strip()
+    }
+    toggles = {p: p in wanted for p in PIPELINE_BIN_PREFIXES}
+    host = normalize_decline_service(
+        service if service is not None else current.get("service")
+    )
+    _patch_section(
+        "alif",
+        max_deals=max(1, min(50, int(max_deals))),
+        empty_passes=max(1, min(20, int(max_empty_list_passes))),
+        min_amount=str(min_amount or "").strip(),
+        max_amount=str(max_amount or "").strip(),
+        allow_visa=bool(allow_visa),
+        allow_mastercard=bool(allow_mastercard),
+        from_pending=bool(from_pending),
+        currencies=list(currencies or []),
+        service=host,
+        skip_tbc=bool(current.get("skip_tbc", True) if skip_tbc is None else skip_tbc),
+        skip_bog=bool(current.get("skip_bog", True) if skip_bog is None else skip_bog),
+        skip_tjk=bool(current.get("skip_tjk", True) if skip_tjk is None else skip_tjk),
+        bin_toggles=toggles,
+    )
+    return host
 
 
 def _parse_currencies(raw: object) -> list[str] | None:
@@ -198,6 +297,9 @@ class TzkApi:
         self._running = False
         self._job_mode: JobMode = ""
         self._pending_confirm: threading.Event | None = None
+        self._confirm_lock = threading.Lock()
+        self._queued_confirm: str = ""
+        self._last_receipt_progress: dict[str, Any] | None = None
         self._confirm_kind: str = "receipts"
         self._confirm_ui_mode: str = ""
         self._confirm_prompt: str = ""
@@ -282,7 +384,14 @@ class TzkApi:
             pass
 
     def _completion_progress(self, payload: dict[str, Any]) -> None:
+        self._last_receipt_progress = payload
         self._notify_ui(f"updateReceiptProgress({json.dumps(payload)});")
+
+    def receipt_progress_script(self) -> str:
+        payload = self._last_receipt_progress
+        if not payload:
+            return ""
+        return f"updateReceiptProgress({json.dumps(payload)});"
 
     def _pipeline_progress(self, payload: dict[str, Any]) -> None:
         self._notify_ui(f"updatePipelineProgress({json.dumps(payload)});")
@@ -306,6 +415,7 @@ class TzkApi:
         self._push_log(line, level="error", service="watch", status="alert")
 
     def _clear_receipt_progress(self) -> None:
+        self._last_receipt_progress = None
         self._notify_ui("clearReceiptProgress();")
 
     def _clear_pipeline_progress(self) -> None:
@@ -401,9 +511,12 @@ class TzkApi:
             "decline_max_amount": amounts.get("max_amount", ""),
             "decline_service": decline_service_setting(),
             "pipeline_service": pipeline_service_setting(),
+            "alif": _alif_state(),
+            "alif_waiting": _alif_waiting_public(),
             "dry_stop_before_pay": pipeline_dry_stop_setting(),
             "skip_tbc": pipeline_skip_tbc_setting(),
             "skip_bog": pipeline_skip_bog_setting(),
+            "skip_tjk": pipeline_skip_tjk_setting(),
             **session_status_snapshot(),
             "login_target": getattr(self, "_login_service", "hz"),
             "screens_dir": str(proofs_dir(cfg)),
@@ -431,6 +544,7 @@ class TzkApi:
             else "",
             "confirm_enabled": self._pending_confirm is not None
             and not self._pending_confirm.is_set(),
+            "receipt_progress": self._last_receipt_progress,
             "recovery_enabled": self._pending_recovery is not None
             and not self._pending_recovery.is_set(),
             "app_version": read_version(),
@@ -679,6 +793,16 @@ class TzkApi:
         except Exception as exc:
             return self._err(f"Не удалось сохранить пропуск BOG: {exc}")
 
+    def save_pipeline_skip_tjk(self, enabled: bool = True) -> dict[str, Any]:
+        """Accept: не брать ТЖК (548028…)."""
+        try:
+            ensure_local_configs()
+            flag = apply_pipeline_skip_tjk(bool(enabled))
+            label = "вкл" if flag else "выкл"
+            return self._ok(message=f"[OK] Пропуск ТЖК: {label}\n")
+        except Exception as exc:
+            return self._err(f"Не удалось сохранить пропуск ТЖК: {exc}")
+
     def start_login(self, service: str = "hz") -> dict[str, Any]:
         if self._running:
             return self._err("Уже выполняется")
@@ -706,9 +830,32 @@ class TzkApi:
         pipeline_bin_prefixes: list[str] | str | None = None,
         currencies: list[str] | str | None = None,
         service: str | None = None,
+        payout_bank: str | None = None,
+        skip_tbc: bool | None = None,
+        skip_bog: bool | None = None,
+        skip_tjk: bool | None = None,
     ) -> dict[str, Any]:
         if self._running:
             return self._err("Уже выполняется")
+        from core.payout_bank import PAYOUT_ALIF, normalize_payout_bank
+
+        bank = normalize_payout_bank(payout_bank)
+        if bank == PAYOUT_ALIF:
+            return self._start_alif_pipeline(
+                max_deals=max_deals,
+                min_amount=min_amount,
+                max_amount=max_amount,
+                allow_visa=allow_visa,
+                allow_mastercard=allow_mastercard,
+                max_empty_list_passes=max_empty_list_passes,
+                from_pending=from_pending,
+                pipeline_bin_prefixes=pipeline_bin_prefixes,
+                currencies=currencies,
+                service=service,
+                skip_tbc=skip_tbc,
+                skip_bog=skip_bog,
+                skip_tjk=skip_tjk,
+            )
         try:
             cfg = load_config()
             pipe = cfg.get("pipeline") or {}
@@ -759,6 +906,7 @@ class TzkApi:
         else:
             mode = "pending→Approve→банк→чеки" if pending else "Accept→банк→чеки"
         self._status = "Обрабатываю сделки…"
+        self._clear_receipt_progress()
         self._set_running(True, "pipeline")
         bin_note = f", BIN {', '.join(active_bins)}" if active_bins else ""
         saved_cur = gui_pipeline_currencies(
@@ -772,6 +920,68 @@ class TzkApi:
             status="section",
         )
         self._start_worker(lambda: run_pipeline(service=host), "pipeline")
+        return self._ok()
+
+    def _start_alif_pipeline(
+        self,
+        *,
+        max_deals: int | None,
+        min_amount: str,
+        max_amount: str,
+        allow_visa: bool,
+        allow_mastercard: bool,
+        max_empty_list_passes: int | None,
+        from_pending: bool | None,
+        pipeline_bin_prefixes: list[str] | str | None,
+        currencies: list[str] | str | None,
+        service: str | None,
+        skip_tbc: bool | None,
+        skip_bog: bool | None,
+        skip_tjk: bool | None,
+    ) -> dict[str, Any]:
+        try:
+            deals = int(max_deals or 5)
+            empty_passes = int(max_empty_list_passes or 2)
+            if isinstance(pipeline_bin_prefixes, str):
+                raw_pb: list[Any] = pipeline_bin_prefixes.split(",")
+            elif isinstance(pipeline_bin_prefixes, (list, tuple)):
+                raw_pb = list(pipeline_bin_prefixes)
+            else:
+                raw_pb = []
+            bins = [
+                "".join(ch for ch in str(x) if ch.isdigit())
+                for x in raw_pb
+                if str(x).strip()
+            ]
+            host = _save_alif_from_body(
+                max_deals=deals,
+                min_amount=str(min_amount or ""),
+                max_amount=str(max_amount or ""),
+                allow_visa=bool(allow_visa),
+                allow_mastercard=bool(allow_mastercard),
+                max_empty_list_passes=empty_passes,
+                from_pending=bool(from_pending),
+                pipeline_bin_prefixes=bins,
+                currencies=_parse_currencies(currencies) or [],
+                service=service,
+                skip_tbc=skip_tbc,
+                skip_bog=skip_bog,
+                skip_tjk=skip_tjk,
+            )
+        except (ValueError, TypeError) as exc:
+            return self._err(f"Некорректное значение: {exc}")
+        self._status = "Alif: обрабатываю сделки…"
+        self._clear_receipt_progress()
+        self._set_running(True, "pipeline")
+        self._push_log(
+            f"Alif: цикл как Activ, якоря временные ({host.upper()}, до {deals} сделок)",
+            service="pipeline",
+            status="section",
+        )
+        self._start_worker(
+            lambda: run_pipeline(service=host, payout_bank="alif"),
+            "pipeline",
+        )
         return self._ok()
 
     def start_accept_names(
@@ -1573,42 +1783,217 @@ class TzkApi:
         oid = self._resolve_completion_order_id(order_id)
         if not oid:
             return self._err("order_id пустой")
-        if self._pending_confirm is None or self._pending_confirm.is_set():
-            return self._err("Сейчас нельзя отменить — дождитесь шага чеков")
+        return self._arm_confirm(f"cancel:{oid}")
+
+    def park_completion_deal(self, order_id: str = "all") -> dict[str, Any]:
+        """Alif: сделка без чека уходит в ожидание и не держит цикл."""
+        oid = str(order_id or "all").strip() or "all"
+        if oid != "all":
+            oid = self._resolve_completion_order_id(oid)
+        if not oid:
+            return self._err("order_id пустой")
+        return self._arm_confirm(f"park:{oid}")
+
+    def save_alif_settings(
+        self,
+        max_deals: int | None = None,
+        min_amount: str = "",
+        max_amount: str = "",
+        allow_visa: bool = True,
+        allow_mastercard: bool = False,
+        max_empty_list_passes: int | None = None,
+        from_pending: bool | None = None,
+        pipeline_bin_prefixes: list[str] | str | None = None,
+        currencies: list[str] | str | None = None,
+        service: str | None = None,
+        skip_tbc: bool | None = None,
+        skip_bog: bool | None = None,
+        skip_tjk: bool | None = None,
+    ) -> dict[str, Any]:
+        try:
+            deals = int(max_deals or 5)
+            passes = int(max_empty_list_passes or 2)
+            if isinstance(pipeline_bin_prefixes, str):
+                raw_pb: list[Any] = pipeline_bin_prefixes.split(",")
+            elif isinstance(pipeline_bin_prefixes, (list, tuple)):
+                raw_pb = list(pipeline_bin_prefixes)
+            else:
+                raw_pb = []
+            bins = [
+                "".join(ch for ch in str(x) if ch.isdigit())
+                for x in raw_pb
+                if str(x).strip()
+            ]
+            _save_alif_from_body(
+                max_deals=deals,
+                min_amount=str(min_amount or ""),
+                max_amount=str(max_amount or ""),
+                allow_visa=bool(allow_visa),
+                allow_mastercard=bool(allow_mastercard),
+                max_empty_list_passes=passes,
+                from_pending=bool(from_pending),
+                pipeline_bin_prefixes=bins,
+                currencies=_parse_currencies(currencies) or [],
+                service=service,
+                skip_tbc=skip_tbc,
+                skip_bog=skip_bog,
+                skip_tjk=skip_tjk,
+            )
+        except (ValueError, TypeError) as exc:
+            return self._err(f"Некорректное значение: {exc}")
+        return self._ok(message="[OK] Alif фильтры сохранены\n", alif=_alif_state())
+
+    def alif_waiting_list(self) -> dict[str, Any]:
+        return self._ok(deals=_alif_waiting_public())
+
+    def alif_waiting_cancel(self, order_id: str) -> dict[str, Any]:
+        if self._running:
+            return self._err("Сначала закончи цикл, потом отменяй из ожидания")
+        oid = str(order_id or "").strip()
+        if not oid:
+            return self._err("order_id пустой")
+        try:
+            asyncio.run(self._alif_waiting_cancel(oid))
+        except Exception as exc:
+            return self._err(str(exc) or exc.__class__.__name__)
+        return self._ok(deals=_alif_waiting_public())
+
+    def alif_waiting_confirm(
+        self,
+        order_id: str,
+        proof_path: str,
+        video_path: str = "",
+    ) -> dict[str, Any]:
+        if self._running:
+            return self._err("Сначала закончи цикл, потом подтверждай из ожидания")
+        oid = str(order_id or "").strip()
+        path = str(proof_path or "").strip()
+        video = str(video_path or "").strip()
+        if not oid or not path:
+            return self._err("Нужны сделка и чек")
+        try:
+            asyncio.run(self._alif_waiting_confirm(oid, path, video))
+        except Exception as exc:
+            return self._err(str(exc) or exc.__class__.__name__)
+        return self._ok(deals=_alif_waiting_public())
+
+    async def _alif_waiting_cancel(self, order_id: str) -> None:
+        from completion.alif_wait import drop_waiting, get_waiting
+        from core.decline_hosts import DECLINE_SERVICE_EZE, DECLINE_SERVICE_URLS
+        from platcore.api_dispute import dispute_deal_via_api
+        from platcore.dispute import parse_dispute_config
+
+        row = get_waiting(order_id)
+        if row is None:
+            raise RuntimeError(f"В ожидании нет {order_id}")
+        cfg = load_config()
+        service = str(row.get("service") or "hz")
+        base = (
+            DECLINE_SERVICE_URLS[DECLINE_SERVICE_EZE]
+            if service == DECLINE_SERVICE_EZE
+            else None
+        )
+        await dispute_deal_via_api(
+            cfg,
+            order_id=order_id,
+            task_id=str(row.get("task_id") or ""),
+            dispute=parse_dispute_config(cfg),
+            deal_index=row.get("index"),
+            base_url=base,
+        )
+        drop_waiting(order_id)
+
+    async def _alif_waiting_confirm(
+        self,
+        order_id: str,
+        proof_path: str,
+        video_path: str = "",
+    ) -> None:
+        from pathlib import Path
+
+        from completion.alif_wait import drop_waiting, get_waiting
+        from core.decline_hosts import DECLINE_SERVICE_EZE, DECLINE_SERVICE_URLS
+        from platcore.api_complete import complete_deal_via_api
+
+        row = get_waiting(order_id)
+        if row is None:
+            raise RuntimeError(f"В ожидании нет {order_id}")
+        proof = Path(proof_path)
+        if not proof.is_file():
+            raise RuntimeError(f"Нет чека {proof}")
+        needs_video = bool(row.get("needs_video"))
+        video = Path(video_path) if str(video_path or "").strip() else None
+        if needs_video and (video is None or not video.is_file()):
+            raise RuntimeError("Крупная сделка: нужен чек и видео")
+        if video is not None and not video.is_file():
+            raise RuntimeError(f"Нет видео {video}")
+        cfg = load_config()
+        service = str(row.get("service") or "hz")
+        base = (
+            DECLINE_SERVICE_URLS[DECLINE_SERVICE_EZE]
+            if service == DECLINE_SERVICE_EZE
+            else None
+        )
+        ledger = row.get("ledger") if isinstance(row.get("ledger"), dict) else None
+        eze_ocr = str((ledger or {}).get("source") or "") == "eze_ocr"
+        await complete_deal_via_api(
+            task_id=str(row.get("task_id") or ""),
+            order_id=order_id,
+            account_digits=str(row.get("account_digits") or ""),
+            holder_name=str(row.get("holder_name") or ""),
+            proof=proof,
+            video=video,
+            ledger=ledger,
+            cfg=cfg,
+            fake_money_sent=bool((cfg.get("stage2") or {}).get("fake_money_sent", False)),
+            give_fiat=str(row.get("give_fiat") or ""),
+            skip_hz=eze_ocr,
+            base_url=base,
+        )
+        drop_waiting(order_id)
+
+    def _arm_confirm(self, kind: str) -> dict[str, Any]:
+        """Клик «Повторить»/«Отмена» даже пока другие чеки ещё грузятся.
+
+        Если цикл уже ждёт клик — будим его. Если пачка ещё в полёте —
+        запоминаем и выполним, когда она закончится.
+        """
         if not is_completion_phase():
-            return self._err("Отмена доступна только на шаге чеков")
-        self._confirm_kind = f"cancel:{oid}"
-        self._pending_confirm.set()
-        self._pending_confirm = None
+            return self._err("Доступно только на шаге чеков")
+        with self._confirm_lock:
+            pending = self._pending_confirm
+            if pending is not None and not pending.is_set():
+                self._confirm_kind = kind
+                pending.set()
+                self._pending_confirm = None
+                return self._ok()
+            self._queued_confirm = kind
         return self._ok()
+
+    def _take_queued_confirm(self) -> tuple[str, threading.Event | None]:
+        with self._confirm_lock:
+            kind = self._queued_confirm
+            self._queued_confirm = ""
+            if kind:
+                return kind, None
+            done = threading.Event()
+            self._pending_confirm = done
+            self._confirm_kind = "receipts"
+            return "", done
 
     def retry_completion_deal(self, order_id: str) -> dict[str, Any]:
         """Повтор Money sent для сделки с ошибкой (чек уже есть)."""
         oid = self._resolve_completion_order_id(order_id)
         if not oid:
             return self._err("order_id пустой")
-        if self._pending_confirm is None or self._pending_confirm.is_set():
-            return self._err("Сейчас нельзя повторить — дождитесь шага чеков")
-        if not is_completion_phase():
-            return self._err("Повтор доступен только на шаге чеков")
-        self._confirm_kind = f"retry:{oid}"
-        self._pending_confirm.set()
-        self._pending_confirm = None
-        return self._ok()
+        return self._arm_confirm(f"retry:{oid}")
 
     def rescan_completion_deal(self, order_id: str) -> dict[str, Any]:
         """Сбросить чек у сделки — положить новый файл и снова «Загрузить»."""
         oid = self._resolve_completion_order_id(order_id)
         if not oid:
             return self._err("order_id пустой")
-        if self._pending_confirm is None or self._pending_confirm.is_set():
-            return self._err("Сейчас нельзя — дождитесь шага чеков")
-        if not is_completion_phase():
-            return self._err("Доступно только на шаге чеков")
-        self._confirm_kind = f"retry:rescan:{oid}"
-        self._pending_confirm.set()
-        self._pending_confirm = None
-        return self._ok()
+        return self._arm_confirm(f"retry:rescan:{oid}")
 
     def _resolve_completion_order_id(self, raw: str) -> str:
         """Привести order_id к каноническому виду из активной сессии чеков."""
@@ -1732,9 +2117,12 @@ class TzkApi:
             self._login_early_confirm = False
             self._confirm_kind = "login"
             return "login"
-        done = threading.Event()
-        self._confirm_kind = "receipts"
-        self._pending_confirm = done
+        queued, done = self._take_queued_confirm()
+        if queued:
+            return queued
+        if done is None:
+            done = threading.Event()
+            self._pending_confirm = done
         text = (prompt or "").strip()
         mode = self._job_mode
         if text.startswith("EZE курс"):
@@ -1836,8 +2224,14 @@ class TzkApi:
                 self._push_log("Завершено", status="ok", service="gui")
         except asyncio.CancelledError:
             self._push_log("Остановлено", service="gui")
-        except Exception:
-            self._push_log(traceback.format_exc(), level="error", service="gui", status="error")
+        except (Exception, SystemExit):
+            tb = traceback.format_exc()
+            try:
+                sys.__stderr__.write(f"[ERROR] Задача {mode} упала:\n{tb}\n")
+                sys.__stderr__.flush()
+            except Exception:
+                pass
+            self._push_log(tb, level="error", service="gui", status="error")
         finally:
             # Гарантия при стопе/ошибке: браузер не висит (headless).
             # Успех + exit_after_run=false — сессию не трогаем.

@@ -19,8 +19,10 @@ export type DealRow = {
   preview_hint?: string;
   file_name?: string;
   can_cancel?: boolean;
+  can_park?: boolean;
   can_retry?: boolean;
   can_rescan?: boolean;
+  sms_cancel?: boolean;
 };
 
 export type ProgressPanel = {
@@ -50,6 +52,7 @@ export type CancelAlert = {
   match_holder?: string;
   match_index?: string | number;
   match_card?: string;
+  match_order_id?: string;
   match_amount_tjs?: string | number;
   raw?: string;
 };

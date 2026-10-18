@@ -1,8 +1,10 @@
-"""BIN пайплайна «Уходят» (537524 / 557755). Вкл — берём только эти."""
+"""BIN пайплайна «Уходят». Вкл — берём только эти (бренд Visa/MC не режет)."""
 
 from core.bank_bins import normalize_known_prefixes
 
 PIPELINE_BIN_PREFIXES: tuple[str, ...] = (
+    "4098",
+    "410170",
     "537524",
     "557755",
 )

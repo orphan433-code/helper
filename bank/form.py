@@ -13,7 +13,6 @@ from device.clicker import input_field_text, tap_after_ocr
 from core.config import bank_settings, capture_region_or_raise
 from device.input_device import dismiss_keyboard, ime_done, ime_next, tap_keyboard_globe
 from device.ocr import OcrHit
-from core.validators import sanitize_holder_name_for_bank
 
 
 class BankFormError(RuntimeError):
@@ -40,6 +39,7 @@ class TransferFormData:
     amount_tjs: float
     amount_eur: float | None = None
     amount_usd: float | None = None
+    fiat_currency: str = ""
 
 
 def format_tjs_input(amount: float, *, decimal: str = ".") -> str:
@@ -136,9 +136,11 @@ def transfer_data_from_config() -> TransferFormData | None:
     if not account or not holder or amount in (None, "", 0):
         return None
     eur = float(amount_eur) if amount_eur not in (None, "") else None
+    from core.deal_bridge import holder_for_bank
+
     return TransferFormData(
         account=account,
-        holder_name=sanitize_holder_name_for_bank(holder),
+        holder_name=holder_for_bank(holder),
         amount_tjs=float(amount),
         amount_eur=eur,
     )

@@ -10,7 +10,7 @@ from core.pipeline_currencies import (
     normalize_pipeline_currencies,
     skip_reason_for_currency,
 )
-from platcore.api_accept import _row_usdt, _skip_row
+from platcore.api_accept import EZE_ACCEPT_CURRENCIES, _row_usdt, _skip_row
 
 
 class CurrencyFilterTests(unittest.TestCase):
@@ -38,6 +38,12 @@ class CurrencyFilterTests(unittest.TestCase):
             normalize_pipeline_currencies("eur, gel"),
             ["EUR", "GEL"],
         )
+
+    def test_eze_pool_takes_gel_and_kzt(self) -> None:
+        allowed = list(EZE_ACCEPT_CURRENCIES)
+        self.assertIsNone(skip_reason_for_currency("GEL", allowed))
+        self.assertIsNone(skip_reason_for_currency("KZT", allowed))
+        self.assertIsNotNone(skip_reason_for_currency("TRY", allowed))
 
     def test_gel_not_in_hz_filter(self) -> None:
         self.assertIsNotNone(skip_reason_for_currency("GEL", ["EUR", "THB", "TRY"]))

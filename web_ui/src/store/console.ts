@@ -102,9 +102,66 @@ function asDeals(raw: unknown): DealRow[] {
           : undefined,
       file_name: row.file_name ? String(row.file_name) : undefined,
       can_cancel: !!row.can_cancel,
+      can_park: !!row.can_park,
       can_retry: !!row.can_retry,
       can_rescan: !!row.can_rescan,
+      sms_cancel: !!row.sms_cancel,
     };
+  });
+}
+
+function dealMatchesCancel(deal: DealRow, item: CancelAlert): boolean {
+  if (item.match_order_id && deal.order_id && item.match_order_id === deal.order_id) {
+    return true;
+  }
+  if (item.match_index != null && deal.index != null) {
+    if (String(item.match_index) === String(deal.index)) return true;
+  }
+  const want = last4(item.match_card);
+  const have = last4(deal.card);
+  return Boolean(want && have && want === have);
+}
+
+function last4(raw: string | undefined): string {
+  const digits = String(raw || "").replace(/\D/g, "");
+  return digits.length >= 4 ? digits.slice(-4) : "";
+}
+
+function markSmsCancel(deals: DealRow[], item: CancelAlert): { deals: DealRow[]; hit: boolean } {
+  let hit = false;
+  const next = deals.map((d) => {
+    if (!dealMatchesCancel(d, item)) return d;
+    hit = true;
+    return { ...d, sms_cancel: true };
+  });
+  return { deals: next, hit };
+}
+
+function preserveSmsCancel(prev: DealRow[], next: DealRow[]): DealRow[] {
+  const flagged = prev.filter((d) => d.sms_cancel);
+  if (!flagged.length) return next;
+  const byOid = new Map(
+    flagged.filter((d) => d.order_id).map((d) => [d.order_id!, d]),
+  );
+  const byIdx = new Map(
+    flagged
+      .filter((d) => d.index != null)
+      .map((d) => [String(d.index), d]),
+  );
+  const byCard = new Map(
+    flagged
+      .map((d) => [last4(d.card), d] as const)
+      .filter(([card]) => card),
+  );
+  return next.map((d) => {
+    if (d.sms_cancel) return d;
+    if (d.order_id && byOid.has(d.order_id)) return { ...d, sms_cancel: true };
+    if (d.index != null && byIdx.has(String(d.index))) {
+      return { ...d, sms_cancel: true };
+    }
+    const card = last4(d.card);
+    if (card && byCard.has(card)) return { ...d, sms_cancel: true };
+    return d;
   });
 }
 
@@ -227,6 +284,7 @@ type Settings = {
   dryStopBeforePay: boolean;
   skipTbc: boolean;
   skipBog: boolean;
+  skipTjk: boolean;
   pipelineBinList: string[];
   pipelineBins: Record<string, boolean>;
   redirMax: string;
@@ -315,6 +373,27 @@ type ConsoleState = {
 
 let logSeq = 0;
 
+const VIEW_KEY = "tjs-view";
+const VIEWS = new Set<ConsoleState["view"]>(["run", "deals", "agent", "log"]);
+
+function readView(): ConsoleState["view"] {
+  try {
+    const raw = sessionStorage.getItem(VIEW_KEY);
+    if (raw && VIEWS.has(raw as ConsoleState["view"])) return raw as ConsoleState["view"];
+  } catch {
+    /* приватный режим */
+  }
+  return "run";
+}
+
+function writeView(view: ConsoleState["view"]) {
+  try {
+    sessionStorage.setItem(VIEW_KEY, view);
+  } catch {
+    /* приватный режим */
+  }
+}
+
 const LABELS: Record<StatusKind, string> = {
   idle: "Готов",
   running: "Работает",
@@ -324,7 +403,7 @@ const LABELS: Record<StatusKind, string> = {
 };
 
 export const useConsole = create<ConsoleState>((set, get) => ({
-  view: "run",
+  view: readView(),
   statusText: IDLE_STATUS,
   statusKind: "idle",
   statusLabel: LABELS.idle,
@@ -357,8 +436,11 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     dryStopBeforePay: false,
     skipTbc: true,
     skipBog: true,
-    pipelineBinList: ["537524", "557755"],
+    skipTjk: true,
+    pipelineBinList: ["4098", "410170", "537524", "557755"],
     pipelineBins: {
+      "4098": false,
+      "410170": false,
       "537524": false,
       "557755": false,
     },
@@ -405,7 +487,10 @@ export const useConsole = create<ConsoleState>((set, get) => ({
   dialog: { open: false, title: "", body: "" },
   declineResultOpen: false,
 
-  setView: (view) => set({ view }),
+  setView: (view) => {
+    writeView(view);
+    set({ view });
+  },
 
   setStatus: (text, kind) => {
     const raw = String(kind || "");
@@ -507,6 +592,7 @@ export const useConsole = create<ConsoleState>((set, get) => ({
         : s.dryStopBeforePay,
       skipTbc: has("skip_tbc") ? state.skip_tbc !== false : s.skipTbc,
       skipBog: has("skip_bog") ? state.skip_bog !== false : s.skipBog,
+      skipTjk: has("skip_tjk") ? state.skip_tjk !== false : s.skipTjk,
       pipelineBinList:
         has("pipeline_bin_list") && Array.isArray(state.pipeline_bin_list)
           ? (state.pipeline_bin_list as string[]).map(String)
@@ -706,6 +792,18 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     }
 
     set(patch);
+    if (!has("running")) return;
+    if (
+      state.receipt_progress &&
+      typeof state.receipt_progress === "object"
+    ) {
+      get().updateReceiptProgress(state.receipt_progress as Record<string, unknown>);
+      return;
+    }
+    if (!state.running) {
+      get().clearReceiptProgress();
+      get().clearPipelineProgress();
+    }
   },
 
   appendLog: (text) => {
@@ -767,10 +865,9 @@ export const useConsole = create<ConsoleState>((set, get) => ({
           String(payload.summary || "") ||
           (total ? `${paid} из ${total}${skipped ? `, пропуск ${skipped}` : ""}` : ""),
         message: String(payload.message || ""),
-        deals,
+        deals: preserveSmsCancel(get().pipeline.deals, deals),
         success: payload.success_text ? String(payload.success_text) : undefined,
         hasErrors: !!payload.has_errors || skipped > 0,
-        // indeterminate while running
         progress: phase === "done" ? 1 : undefined,
         phase,
       },
@@ -791,6 +888,10 @@ export const useConsole = create<ConsoleState>((set, get) => ({
         deals = preserveReceiptPreviewFields(cur.deals, deals);
       }
     }
+    deals = preserveSmsCancel(
+      [...get().pipeline.deals, ...cur.deals],
+      deals,
+    );
     const done = Number(payload.done || 0);
     const failed = Number(payload.failed || 0);
     const total = Number(payload.total || deals.length || 0);
@@ -868,7 +969,10 @@ export const useConsole = create<ConsoleState>((set, get) => ({
     const cur = get().receipts;
     if (!cur.visible || (cur.phase && cur.phase !== "waiting")) return;
 
-    const deals = mergeReceiptPreview(cur.deals, preview);
+    const deals = preserveSmsCancel(
+      cur.deals,
+      mergeReceiptPreview(cur.deals, preview),
+    );
     const ready = Number(preview.ready_count || 0);
     const total = Number(preview.total || cur.deals.length || 0);
     const summary = receiptWaitingSummary(deals, total, ready);
@@ -968,18 +1072,28 @@ export const useConsole = create<ConsoleState>((set, get) => ({
       match_holder: payload.match_holder ? String(payload.match_holder) : undefined,
       match_index: payload.match_index as string | number | undefined,
       match_card: payload.match_card ? String(payload.match_card) : undefined,
+      match_order_id: payload.match_order_id
+        ? String(payload.match_order_id)
+        : undefined,
       match_amount_tjs: payload.match_amount_tjs as string | number | undefined,
       raw: payload.raw ? String(payload.raw) : undefined,
     };
-    set({ cancels: [item, ...get().cancels].slice(0, 20) });
+    const pipe = markSmsCancel(get().pipeline.deals, item);
+    const rec = markSmsCancel(get().receipts.deals, item);
+    const matched = pipe.hit || rec.hit;
+    set({
+      pipeline: pipe.hit ? { ...get().pipeline, deals: pipe.deals } : get().pipeline,
+      receipts: rec.hit ? { ...get().receipts, deals: rec.deals } : get().receipts,
+      cancels: matched ? get().cancels : [item, ...get().cancels].slice(0, 20),
+    });
     const who = item.match_holder || item.match_label || item.card || "";
     get().setStatus("Отмена списания" + (who ? `: ${who}` : ""), "error");
     get().appendLog(`[ALERT] Отмена списания ${item.amount || ""} ${item.card || ""}`);
-    if (!get().dialog.open) {
+    if (!matched && !get().dialog.open) {
       const bits = [item.amount, item.card, who].filter(Boolean);
       void get().openDialog({
         title: "Списание отменили",
-        body: bits.join(" · ") || "Перевод не прошёл",
+        body: bits.join(" · ") || "Сделка в списке не найдена",
         danger: true,
         alert: true,
       });

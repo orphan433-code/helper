@@ -13,6 +13,16 @@ from core.validators import PanicError, sanitize_holder_name_for_bank
 PENDING_DEAL_PATH = RUNTIME_DIR / "pending_deal.json"
 
 
+def holder_for_bank(raw: str) -> str:
+    """Activ режет ФИО под правила банка. Alif принимает имя как пришло."""
+    from core.payout_bank import is_alif
+
+    text = " ".join((raw or "").split())
+    if is_alif():
+        return text
+    return sanitize_holder_name_for_bank(text)
+
+
 def deal_to_transfer_form(deal: TzkDeal) -> TransferFormData:
     account = (deal.account_digits or "").strip()
     holder = (deal.holder_name or "").strip()
@@ -23,7 +33,7 @@ def deal_to_transfer_form(deal: TzkDeal) -> TransferFormData:
     if deal.amount_tjs <= 0:
         raise PanicError(f"Сумма TJS некорректна: {deal.amount_tjs}")
 
-    bank_holder = sanitize_holder_name_for_bank(holder)
+    bank_holder = holder_for_bank(holder)
     if bank_holder != holder:
         print(f"[INFO] ФИО для банка: {holder!r} → {bank_holder!r}")
 
@@ -33,6 +43,7 @@ def deal_to_transfer_form(deal: TzkDeal) -> TransferFormData:
         amount_tjs=deal.amount_tjs,
         amount_eur=deal.amount_eur if deal.amount_eur > 0 else None,
         amount_usd=deal.amount_usd if deal.amount_usd > 0 else None,
+        fiat_currency=str(deal.amount_check_currency or "").strip().upper(),
     )
 
 
@@ -83,8 +94,9 @@ def load_pending_deal() -> TransferFormData | None:
     usd = float(amount_usd) if amount_usd not in (None, "", 0) else None
     return TransferFormData(
         account=account,
-        holder_name=sanitize_holder_name_for_bank(holder),
+        holder_name=holder_for_bank(holder),
         amount_tjs=float(amount),
         amount_eur=eur,
         amount_usd=usd,
+        fiat_currency=str(payload.get("amount_check_currency") or "").strip().upper(),
     )

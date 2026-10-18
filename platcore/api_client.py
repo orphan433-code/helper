@@ -28,6 +28,8 @@ _FIND_NEW_TYPE = "buyAll"
 _FIND_NEW_LIMIT = 100
 _HTTP_TIMEOUT_SEC = 60
 _HTTP_RETRIES = 3
+_RATE_LIMIT_RETRIES = 5
+_RATE_LIMIT_MAX_DELAY_SEC = 10.0
 _JWT_RE = re.compile(
     r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"
 )
@@ -209,14 +211,19 @@ async def prime_hz_ledger(
     """
     from core.human import parse_human_timing
     from platcore.completion import ensure_completion_deal_ready
+    from core.payout_bank import is_alif
     from playwright.async_api import async_playwright
 
+    widget_bank = "alif" if is_alif() else "activ"
     profile = _profile_dir(cfg, base_url=base_url)
     browser_cfg = cfg.get("browser") or {}
     headless = bool(browser_cfg.get("headless", False))
     url = f"{base_url}/pay-out?limit=100&status=pending&dealId={deal_id}"
     mode = "headless" if headless else "окно"
-    info(f"hz-calc: открываю {mode} {order_id} (профиль {profile.name})")
+    info(
+        f"hz-calc: открываю {mode} {order_id} "
+        f"(профиль {profile.name}, банк {widget_bank})"
+    )
     posted = False
     keys_json = json.dumps(list(_TOKEN_KEYS))
     timing = parse_human_timing(cfg)
@@ -236,10 +243,23 @@ async def prime_hz_ledger(
         try:
             page = context.pages[0] if context.pages else await context.new_page()
 
+            ledger_posts: list[dict] = []
+
             def _on_response(resp) -> None:
                 nonlocal posted
-                if "/_hz/ledger" in (resp.url or "") and resp.request.method == "POST":
-                    posted = True
+                if "/_hz/ledger" not in (resp.url or "") or resp.request.method != "POST":
+                    return
+                posted = True
+                raw = resp.request.post_data or ""
+                try:
+                    body = json.loads(raw) if raw else {}
+                except json.JSONDecodeError:
+                    body = {}
+                rec = body.get("record") if isinstance(body, dict) else None
+                if not isinstance(rec, dict):
+                    rec = body if isinstance(body, dict) else {}
+                if isinstance(rec, dict):
+                    ledger_posts.append(rec)
 
             page.on("response", _on_response)
             await page.add_init_script(
@@ -252,6 +272,12 @@ async def prime_hz_ledger(
                             sessionStorage.setItem(k, tok);
                         }} catch (e) {{}}
                     }}
+                    try {{
+                        localStorage.setItem("hz_bank", {json.dumps(widget_bank)});
+                        if ({json.dumps(widget_bank)} === "alif") {{
+                            localStorage.setItem("hz_alif_cur", "usd");
+                        }}
+                    }} catch (e) {{}}
                 }}"""
             )
             if not headless:
@@ -298,10 +324,52 @@ async def prime_hz_ledger(
                 except Exception:
                     warn(f"hz-calc: #hz-calc нет, url={page.url}")
 
-                for _ in range(60):
-                    if posted:
-                        break
-                    await page.wait_for_timeout(200)
+                from core.payout_bank import is_alif
+
+                if is_alif():
+                    mark = len(ledger_posts)
+                    posted = False
+                    from platcore.card import select_alif_hz_calc
+
+                    await select_alif_hz_calc(page)
+                    for _ in range(60):
+                        fresh = [
+                            item
+                            for item in ledger_posts[mark:]
+                            if item.get("tjs")
+                            and str(item.get("bank") or "alif").lower() == "alif"
+                        ]
+                        if fresh:
+                            posted = True
+                            info(
+                                f"hz-calc: Alif ledger {fresh[-1].get('tjs')} TJS, "
+                                f"give {fresh[-1].get('give_amt')} "
+                                f"{str(fresh[-1].get('give_cur') or '').upper()}"
+                            )
+                            break
+                        await page.wait_for_timeout(200)
+                else:
+                    mark = len(ledger_posts)
+                    posted = False
+                    from platcore.card import select_activ_hz_calc
+
+                    await select_activ_hz_calc(page)
+                    for _ in range(60):
+                        fresh = [
+                            item
+                            for item in ledger_posts[mark:]
+                            if item.get("tjs")
+                            and str(item.get("bank") or "").lower() == "activ"
+                        ]
+                        if fresh:
+                            posted = True
+                            info(
+                                f"hz-calc: Activ ledger {fresh[-1].get('tjs')} TJS, "
+                                f"give {fresh[-1].get('give_amt')} "
+                                f"{str(fresh[-1].get('give_cur') or '').upper()}"
+                            )
+                            break
+                        await page.wait_for_timeout(200)
 
                 if posted:
                     await page.wait_for_timeout(800)
@@ -416,21 +484,45 @@ def retryable_http_exc(exc: BaseException) -> bool:
     return "timed out" in text or "timeout" in text
 
 
+def _rate_limit_delay(exc: urllib.error.HTTPError, attempt: int) -> float:
+    raw = (exc.headers.get("Retry-After") if exc.headers else None) or ""
+    try:
+        delay = float(raw)
+    except ValueError:
+        delay = 0.0
+    if delay <= 0:
+        delay = 1.5 * attempt
+    return min(delay, _RATE_LIMIT_MAX_DELAY_SEC)
+
+
 def urlopen_read(
     req: urllib.request.Request,
     *,
     timeout: float = _HTTP_TIMEOUT_SEC,
     retries: int = _HTTP_RETRIES,
 ) -> tuple[int, bytes]:
-    """urlopen + read. Таймаут/502–504 — повтор; иначе TimeoutError / HTTPError."""
+    """urlopen + read. Таймаут/502–504 — повтор; 429 — пауза и повтор (свой лимит)."""
     last: BaseException | None = None
     attempts = max(1, int(retries))
-    for attempt in range(1, attempts + 1):
+    attempt = 0
+    rate_limited = 0
+    while attempt < attempts:
+        attempt += 1
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return int(resp.status), resp.read() or b""
         except urllib.error.HTTPError as exc:
             last = exc
+            if exc.code == 429 and rate_limited < _RATE_LIMIT_RETRIES:
+                rate_limited += 1
+                delay = _rate_limit_delay(exc, rate_limited)
+                warn(
+                    f"HTTP 429 — жду {delay:g} с, повтор "
+                    f"{rate_limited}/{_RATE_LIMIT_RETRIES}"
+                )
+                time.sleep(delay)
+                attempt -= 1
+                continue
             if retryable_http_exc(exc) and attempt < attempts:
                 warn(f"HTTP {exc.code} — повтор {attempt}/{attempts}")
                 time.sleep(attempt)
@@ -587,19 +679,31 @@ def _file_content_type(path: Path) -> str:
     if guessed:
         return guessed
     suffix = path.suffix.lower()
-    if suffix == ".png":
-        return "image/png"
-    if suffix in {".jpg", ".jpeg"}:
-        return "image/jpeg"
-    if suffix == ".webp":
-        return "image/webp"
-    if suffix == ".mp4":
-        return "video/mp4"
-    if suffix == ".mov":
-        return "video/quicktime"
-    if suffix == ".webm":
-        return "video/webm"
-    return "application/octet-stream"
+    fallback = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".bmp": "image/bmp",
+        ".tif": "image/tiff",
+        ".tiff": "image/tiff",
+        ".heic": "image/heic",
+        ".heif": "image/heif",
+        ".avif": "image/avif",
+        ".mp4": "video/mp4",
+        ".m4v": "video/x-m4v",
+        ".mov": "video/quicktime",
+        ".qt": "video/quicktime",
+        ".webm": "video/webm",
+        ".mkv": "video/x-matroska",
+        ".3gp": "video/3gpp",
+        ".3gpp": "video/3gpp",
+        ".avi": "video/x-msvideo",
+        ".mpeg": "video/mpeg",
+        ".mpg": "video/mpeg",
+    }
+    return fallback.get(suffix, "application/octet-stream")
 
 
 def _ascii_filename(name: str) -> str:

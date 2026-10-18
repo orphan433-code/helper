@@ -146,11 +146,20 @@ export function RunView() {
       patch({ skipBog: prev });
     }
   };
+  const setSkipTjk = async (next: boolean) => {
+    if (running || next === s.skipTjk) return;
+    const prev = s.skipTjk;
+    patch({ skipTjk: next });
+    const result = await apiCall(() => api().save_pipeline_skip_tjk(next), err);
+    if (result && typeof result.error === "string" && result.error) {
+      patch({ skipTjk: prev });
+    }
+  };
   const start = async () => {
     const deals = Math.max(1, Math.min(50, s.maxDeals || 0));
     if (!s.maxDeals || s.maxDeals < 1) {
       await openDialog({
-        title: "Запуск",
+        title: "Activ",
         body: "Укажи сколько сделок (1–50)",
         alert: true,
       });
@@ -173,6 +182,10 @@ export function RunView() {
           pipelineBins,
           selectedCurrencies,
           s.pipelineService,
+          undefined,
+          s.skipTbc,
+          s.skipBog,
+          s.skipTjk,
         ),
       err,
     );
@@ -399,7 +412,9 @@ export function RunView() {
               {cancels.length > 0 && (
                 <div className="space-y-2 rounded-xl border border-danger/20 bg-danger-soft/80 p-3">
                   <div className="flex items-center justify-between">
-                    <div className="text-xs font-semibold text-danger">Отмены списания</div>
+                    <div className="text-xs font-semibold text-danger">
+                      Отмена, сделка в списке не найдена
+                    </div>
                     <RippleButton
                       onClick={() => clearCancelAlerts()}
                       rippleColor="#fecaca"
@@ -537,6 +552,13 @@ export function RunView() {
                     disabled={running}
                     onClick={() => void setSkipBog(!s.skipBog)}
                   />
+                  <FilterChip
+                    label="пропуск ТЖК"
+                    tone="warn"
+                    active={s.skipTjk}
+                    disabled={running}
+                    onClick={() => void setSkipTjk(!s.skipTjk)}
+                  />
                 </FilterChipRow>
               </FilterSection>
               <FilterSection label="Уходят">
@@ -650,9 +672,13 @@ function pipelineFacts(
   else if (s.allowMastercard) facts.push({ label: "карты", value: "MC" });
   else facts.push({ label: "карты", value: "не выбраны" });
 
-  if (s.skipTbc && s.skipBog) facts.push({ label: "банки", value: "пропуск TBC и BOG" });
-  else if (s.skipTbc) facts.push({ label: "банки", value: "пропуск TBC" });
-  else if (s.skipBog) facts.push({ label: "банки", value: "пропуск BOG" });
+  const skippedBanks = [
+    s.skipTbc && "TBC",
+    s.skipBog && "BOG",
+    s.skipTjk && "ТЖК",
+  ].filter(Boolean);
+  if (skippedBanks.length)
+    facts.push({ label: "банки", value: `пропуск ${skippedBanks.join(", ")}` });
   else facts.push({ label: "банки", value: "все" });
 
   const onlyBins = uhodyatBins.filter((p) => s.pipelineBins[p]);

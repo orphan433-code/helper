@@ -9,7 +9,11 @@ from urllib.parse import parse_qs, urlparse
 from playwright.async_api import Locator, Page
 
 from core.models import RowPreview
-from core.deals_ui_local import pipeline_ui_skip_bog, pipeline_ui_skip_tbc
+from core.deals_ui_local import (
+    pipeline_ui_skip_bog,
+    pipeline_ui_skip_tbc,
+    pipeline_ui_skip_tjk,
+)
 from core.pipeline_currencies import (
     fiat_code_from_amount_raw,
     skip_reason_for_currency,
@@ -540,6 +544,7 @@ async def collect_eligible_new_previews_scrolled(
                 preview.account_raw,
                 skip_tbc=pipeline_ui_skip_tbc(),
                 skip_bog=pipeline_ui_skip_bog(),
+                skip_tjk=pipeline_ui_skip_tjk(),
             )
             if skip_bank:
                 continue

@@ -105,7 +105,7 @@ _VIDEO_EXTS = {".mp4", ".mov", ".webm", ".m4v"}
 
 
 def _sync_from_phone(*, kind: str, since_ts: float) -> None:
-    """Подтянуть новые файлы с телефона (ошибки глотаем — остаётся Downloads)."""
+    """Подтянуть новые файлы с телефона. Alif и Activ одинаково, в Загрузки."""
     try:
         from device.phone_media import pull_new_phone_media
 

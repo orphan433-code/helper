@@ -63,6 +63,37 @@ class UrlopenReadTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(raw, b'{"ok":true}')
 
+    def test_429_waits_then_succeeds(self) -> None:
+        req = MagicMock()
+        resp = MagicMock()
+        resp.status = 200
+        resp.read.return_value = b"[]"
+        resp.__enter__.return_value = resp
+        resp.__exit__.return_value = False
+        with (
+            patch("platcore.api_client.time.sleep") as sleep,
+            patch(
+                "platcore.api_client.urllib.request.urlopen",
+                side_effect=[_http_error(429), _http_error(429), resp],
+            ),
+        ):
+            status, _raw = urlopen_read(req, timeout=60, retries=1)
+        self.assertEqual(status, 200)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_429_gives_up_after_limit(self) -> None:
+        req = MagicMock()
+        with (
+            patch("platcore.api_client.time.sleep"),
+            patch(
+                "platcore.api_client.urllib.request.urlopen",
+                side_effect=_http_error(429),
+            ),
+        ):
+            with self.assertRaises(HTTPError) as ctx:
+                urlopen_read(req, timeout=60, retries=3)
+        self.assertEqual(ctx.exception.code, 429)
+
 
 class CrashDetailTests(unittest.TestCase):
     def test_timeout_hides_traceback(self) -> None:

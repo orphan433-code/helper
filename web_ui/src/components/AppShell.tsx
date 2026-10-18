@@ -280,7 +280,7 @@ export function AppShell() {
   };
 
   const tabs: { id: ViewId; label: string; icon: typeof Play }[] = [
-    { id: "run", label: "Запуск", icon: Play },
+    { id: "run", label: "Activ", icon: Play },
     { id: "deals", label: "Операции", icon: ArrowLeftRight },
     { id: "agent", label: "Команда", icon: Sparkles },
     { id: "log", label: "Журнал", icon: ScrollText },

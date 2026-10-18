@@ -19,7 +19,7 @@ import time
 from typing import Any
 
 try:
-    from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
     from fastapi.responses import FileResponse, HTMLResponse, Response
     from fastapi.staticfiles import StaticFiles
     from starlette.background import BackgroundTask
@@ -272,6 +272,7 @@ def create_app() -> Any:
         "save_pipeline_dry_stop",
         "save_pipeline_skip_tbc",
         "save_pipeline_skip_bog",
+        "save_pipeline_skip_tjk",
         "open_screens_folder",
         "open_videos_folder",
         "get_update_status",
@@ -289,6 +290,9 @@ def create_app() -> Any:
     @app.on_event("startup")
     async def _startup() -> None:
         hub.set_loop(asyncio.get_running_loop())
+        from completion.alif_wait import clear_waiting
+
+        clear_waiting()
 
     @app.get("/")
     async def index() -> HTMLResponse:
@@ -459,6 +463,25 @@ def create_app() -> Any:
             service=body.get("service", "hz"),
         )
 
+    @app.post("/api/save_alif_settings")
+    async def save_alif_settings(body: dict[str, Any]) -> Any:
+        return await _call(
+            "save_alif_settings",
+            max_deals=body.get("max_deals"),
+            min_amount=body.get("min_amount", ""),
+            max_amount=body.get("max_amount", ""),
+            allow_visa=body.get("allow_visa", True),
+            allow_mastercard=body.get("allow_mastercard", False),
+            max_empty_list_passes=body.get("max_empty_list_passes"),
+            from_pending=body.get("from_pending", False),
+            pipeline_bin_prefixes=body.get("pipeline_bin_prefixes"),
+            currencies=body.get("currencies"),
+            service=body.get("service"),
+            skip_tbc=body.get("skip_tbc"),
+            skip_bog=body.get("skip_bog"),
+            skip_tjk=body.get("skip_tjk"),
+        )
+
     @app.post("/api/start_pipeline")
     async def start_pipeline(body: dict[str, Any]) -> Any:
         return await _call(
@@ -473,6 +496,10 @@ def create_app() -> Any:
             pipeline_bin_prefixes=body.get("pipeline_bin_prefixes"),
             currencies=body.get("currencies"),
             service=body.get("service"),
+            payout_bank=body.get("payout_bank"),
+            skip_tbc=body.get("skip_tbc"),
+            skip_bog=body.get("skip_bog"),
+            skip_tjk=body.get("skip_tjk"),
         )
 
     @app.post("/api/start_accept_names")
@@ -552,6 +579,14 @@ def create_app() -> Any:
         body = body or {}
         return await _call(
             "save_pipeline_skip_bog",
+            enabled=bool(body.get("enabled", True)),
+        )
+
+    @app.post("/api/save_pipeline_skip_tjk")
+    async def save_pipeline_skip_tjk(body: dict[str, Any] | None = None) -> Any:
+        body = body or {}
+        return await _call(
+            "save_pipeline_skip_tjk",
             enabled=bool(body.get("enabled", True)),
         )
 
@@ -667,6 +702,61 @@ def create_app() -> Any:
     async def confirm(body: dict[str, Any]) -> Any:
         return await _call("confirm", kind=body.get("kind", "receipts"))
 
+    @app.get("/api/alif_waiting")
+    async def alif_waiting() -> Any:
+        return await _call("alif_waiting_list")
+
+    @app.post("/api/alif_waiting_cancel")
+    async def alif_waiting_cancel(body: dict[str, Any]) -> Any:
+        return await _call("alif_waiting_cancel", order_id=body.get("order_id", ""))
+
+    @app.post("/api/alif_waiting_confirm")
+    async def alif_waiting_confirm(
+        order_id: str = Form(""),
+        files: list[UploadFile] = File(),
+    ) -> Any:
+        from pathlib import Path
+
+        from completion.alif_wait import split_proof_files
+
+        oid = str(order_id or "").strip()
+        uploads = [item for item in files if item is not None and item.filename]
+        if not oid or not uploads:
+            return {"ok": False, "error": "Нужны сделка и файлы"}
+        split = split_proof_files(
+            [(item.filename or "", item.content_type or "") for item in uploads]
+        )
+        if isinstance(split, str):
+            return {"ok": False, "error": split}
+        image_i, video_i = split
+
+        def _safe_name(upload: UploadFile, fallback: str) -> str:
+            raw_name = Path(upload.filename or fallback).name
+            safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in raw_name)
+            return safe or fallback
+
+        dest_dir = ROOT / "runtime" / "alif_proofs"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        shot = uploads[image_i]
+        dest = dest_dir / f"{oid}_{_safe_name(shot, 'shot.png')}"
+        dest.write_bytes(await shot.read())
+        video_path = ""
+        if video_i >= 0:
+            clip = uploads[video_i]
+            video_dest = dest_dir / f"{oid}_{_safe_name(clip, 'clip.mp4')}"
+            video_dest.write_bytes(await clip.read())
+            video_path = str(video_dest)
+        return await _call(
+            "alif_waiting_confirm",
+            order_id=oid,
+            proof_path=str(dest),
+            video_path=video_path,
+        )
+
+    @app.post("/api/park_completion_deal")
+    async def park_completion_deal(body: dict[str, Any]) -> Any:
+        return await _call("park_completion_deal", order_id=body.get("order_id", "all"))
+
     @app.post("/api/cancel_completion_deal")
     async def cancel_completion_deal(body: dict[str, Any]) -> Any:
         return await _call("cancel_completion_deal", order_id=body.get("order_id", ""))
@@ -721,6 +811,13 @@ def create_app() -> Any:
         q = hub.subscribe()
         try:
             await websocket.send_json({"type": "engine", **engine.status()})
+            snap = ""
+            try:
+                snap = engine.api.receipt_progress_script()
+            except Exception:
+                snap = ""
+            if snap:
+                await websocket.send_json({"type": "eval", "script": snap})
             while True:
                 # Логи UI продолжает забирать через poll_logs — здесь только push-события.
                 event = await q.get()

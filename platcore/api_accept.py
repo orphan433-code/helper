@@ -20,6 +20,7 @@ from core.deals_ui_local import (
     pipeline_ui_dry_stop,
     pipeline_ui_skip_bog,
     pipeline_ui_skip_tbc,
+    pipeline_ui_skip_tjk,
 )
 from core.decline_hosts import (
     DECLINE_SERVICE_EZE,
@@ -35,8 +36,7 @@ from core.validators import (
     deal_to_dict,
     optional_clean_holder_name,
     session_requisites_key,
-    skip_reason_for_card_bin,
-    skip_reason_for_card_brand,
+    skip_reason_for_card_choice,
     skip_reason_for_ignored_banks,
     ignored_bank_prefixes,
 )
@@ -58,10 +58,12 @@ from platcore.pipeline import (
     pay_accepted_deal,
 )
 from ui.job_control import JobStopped, raise_if_stopped
-from ui.progress import PipelineProgressTracker
+from ui.progress import PipelineProgressTracker, next_ui_index
 
 _LEDGER_WAIT_SEC = 45.0
 _LEDGER_POLL_SEC = 1.2
+_FIND_NEW_MAX_FAILS = 3
+EZE_ACCEPT_CURRENCIES = ("GEL", "KZT")
 
 
 def _api_flow_cfg(cfg: dict) -> dict:
@@ -155,6 +157,7 @@ def _skip_row(
     requisites_in_run: dict[str, int],
     skip_tbc: bool | None = None,
     skip_bog: bool | None = None,
+    skip_tjk: bool | None = None,
 ) -> str | None:
     usdt = _row_usdt(row)
     if min_amount is not None and usdt < min_amount:
@@ -166,15 +169,15 @@ def _skip_row(
         card,
         skip_tbc=pipeline_ui_skip_tbc() if skip_tbc is None else skip_tbc,
         skip_bog=pipeline_ui_skip_bog() if skip_bog is None else skip_bog,
+        skip_tjk=pipeline_ui_skip_tjk() if skip_tjk is None else skip_tjk,
     )
     if bank_skip:
         return bank_skip
-    if bin_prefixes:
-        skip_bin = skip_reason_for_card_bin(card, bin_prefixes)
-        if skip_bin:
-            return skip_bin
-    skip_card = skip_reason_for_card_brand(
-        card, allow_visa=allow_visa, allow_mastercard=allow_mc
+    skip_card = skip_reason_for_card_choice(
+        card,
+        allow_visa=allow_visa,
+        allow_mastercard=allow_mc,
+        bin_prefixes=bin_prefixes,
     )
     if skip_card:
         return skip_card
@@ -226,6 +229,26 @@ def _deal_from_ledger(
         raise PanicError(
             f"API Accept: ledger без TJS/give (tjs={tjs_raw!r} "
             f"give={give_raw!r} {give_cur!r})"
+        )
+    from core.payout_bank import is_alif
+
+    ledger_bank = str(ledger.get("bank") or "").strip().lower()
+    if is_alif():
+        if ledger_bank != "alif":
+            raise PanicError(
+                f"API Accept: ledger банк {ledger_bank or '?'} — "
+                f"для Alif нужна вкладка Alif, не Activ (tjs={tjs_raw})"
+            )
+        if give_cur != "usd":
+            raise PanicError(
+                f"API Accept: Alif give {give_raw} {give_cur.upper()} — "
+                "ждём I give USD"
+            )
+    elif ledger_bank == "alif":
+        raise PanicError(
+            f"API Accept: выплата Activ, а ledger от Alif "
+            f"({tjs_raw} TJS, give {give_raw} {give_cur.upper()}). "
+            "В банк не вводим"
         )
 
     tjs = _num(tjs_raw)
@@ -525,7 +548,7 @@ async def accept_deals_loop_api(
     host_service = normalize_decline_service(service) if service else "hz"
     eze = host_service == DECLINE_SERVICE_EZE
     if eze:
-        currencies = ["GEL"]
+        currencies = list(EZE_ACCEPT_CURRENCIES)
         base_url = DECLINE_SERVICE_URLS[DECLINE_SERVICE_EZE]
         if pipeline_ui_dry_stop():
             max_deals = 1
@@ -540,6 +563,7 @@ async def accept_deals_loop_api(
     bin_prefixes = pipeline_ui_bin_prefixes()
     skip_tbc = pipeline_ui_skip_tbc()
     skip_bog = pipeline_ui_skip_bog()
+    skip_tjk = pipeline_ui_skip_tjk()
     section(f"API Accept: до {max_deals} сделок, PUT /accept")
     if currencies:
         info(f"Валюты: {', '.join(currencies)}")
@@ -547,6 +571,8 @@ async def accept_deals_loop_api(
         info(f"Пропуск TBC: {', '.join(p + '*' for p in ignored_bank_prefixes('tbc'))}")
     if skip_bog:
         info(f"Пропуск BOG: {', '.join(p + '*' for p in ignored_bank_prefixes('bog'))}")
+    if skip_tjk:
+        info(f"Пропуск ТЖК: {', '.join(p + '*' for p in ignored_bank_prefixes('tjk'))}")
     if bin_prefixes:
         info(f"BIN: только {', '.join(p + '*' for p in bin_prefixes)}")
     if fake_accept:
@@ -566,12 +592,25 @@ async def accept_deals_loop_api(
     requisites_in_run: dict[str, int] = {}
     spawned = 0
     empty_passes = 0
+    find_fails = 0
     progress = PipelineProgressTracker(total=max_deals)
     progress.begin_search()
 
     while spawned < max_deals:
         raise_if_stopped()
-        rows = await asyncio.to_thread(fetch_find_new_rows, base_url, token)
+        try:
+            rows = await asyncio.to_thread(fetch_find_new_rows, base_url, token)
+        except JobStopped:
+            raise
+        except Exception as exc:
+            find_fails += 1
+            warn(f"findNew упал ({find_fails}/{_FIND_NEW_MAX_FAILS}): {exc}")
+            if find_fails >= _FIND_NEW_MAX_FAILS:
+                warn("findNew не отвечает — заканчиваю Accept, иду к чекам")
+                break
+            await asyncio.sleep(poll_sec)
+            continue
+        find_fails = 0
         picked = False
         for row in rows:
             deal_id = str(row.get("_id") or "")
@@ -588,6 +627,7 @@ async def accept_deals_loop_api(
                 requisites_in_run=requisites_in_run,
                 skip_tbc=skip_tbc,
                 skip_bog=skip_bog,
+                skip_tjk=skip_tjk,
             )
             if skip:
                 info(
@@ -598,7 +638,7 @@ async def accept_deals_loop_api(
                 continue
 
             seen.add(deal_id)
-            next_index = spawned + 1
+            next_index = next_ui_index(accepted_deals, progress)
             preview = _preview_from_row(row)
             progress.start_accept(next_index, preview)
             info(f"API Accept #{next_index}: {row.get('orderId')} {_row_fiat_code(row)}")
@@ -630,9 +670,14 @@ async def accept_deals_loop_api(
                 bank_ok = await pay_accepted_deal(
                     accepted, cfg, progress=progress
                 )
-            spawned += 1
             empty_passes = 0
             picked = True
+            if not bank_ok and not accepted.dry_stop:
+                info(
+                    f"#{accepted.index}: пропуск — слот свободен, следующая сделка"
+                )
+                continue
+            spawned += 1
             if not bank_ok:
                 break
             if spawned < max_deals and spawn_delay > 0:
